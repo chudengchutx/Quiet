@@ -559,6 +559,7 @@ impl R<'_> {
             .child(content)
             .child(record_bounds(b.id, self.bounds.clone()))
             .children(handle)
+            .children(self.read_mark_gutter(b.id, env, cx))
             .children(self.fold_button(b, env, cx))
             .when(!self.ghost && self.ed.is_dragged(b.id), |d| d.opacity(0.5))
             .children(self.ed.drop_flash_el(b.id).filter(|_| !self.ghost))
@@ -582,6 +583,29 @@ impl R<'_> {
                 d.child(if self.flat == Some(b.id) { hl.rounded_t(px(r)) } else { hl.rounded(px(r)) })
             })
             .into_any_element()
+    }
+
+    /// Left gutter pill for the 「读到这里」 mark — sits clear of the hover handle.
+    fn read_mark_gutter(&self, id: BlockId, env: Env, _cx: &mut Context<Editor>) -> Option<AnyElement> {
+        if self.ghost || env.cell || env.in_callout || self.ed.read_mark != Some(id) {
+            return None;
+        }
+        Some(
+            div()
+                .id(("read-mark", id.0))
+                .absolute()
+                .top(px(4.))
+                .left(px(-56.))
+                .size(px(18.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme::ca(craft::B500, 0.12))
+                .child(icon("bookmark", 14., Theme::primary()))
+                .tip_label(crate::settings::tr("阅读标记", "Reading mark").into(), crate::editor_ui::TipSide::Right)
+                .into_any_element(),
+        )
     }
 
     /// `.fold-handler`: an 18×16 box (2px left padding) 20px left of the
@@ -1656,7 +1680,7 @@ impl Editor {
             .children(block_overlay)
             .children(image_layer)
             .children(counter)
-            .children(self.back_to_top_button(cx))
+            .children(self.floating_nav_buttons(cx))
             .children(find_box)
             .children(lightbox)
             .children(toast)
@@ -1680,22 +1704,20 @@ impl Render for Editor {
 
 impl Editor {
 
-    /// Floating 「回到顶部」 control (Feishu-style): bottom-right, only once
-    /// the page has scrolled past ~200px / the first list item.
-    fn back_to_top_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Floating bottom-right nav: 「跳到阅读标记」 when a mark exists, and
+    /// 「回到顶部」 once the page has scrolled past ~200px.
+    fn floating_nav_buttons(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let top = self.list.logical_scroll_top();
-        if top.item_ix == 0 && top.offset_in_item <= px(200.) {
+        let show_top = !(top.item_ix == 0 && top.offset_in_item <= px(200.));
+        let show_mark = self.read_mark.is_some();
+        if !show_top && !show_mark {
             return None;
         }
-        // Sit above the selection word-count chip when both are visible.
         let above_counter = self.core.in_block_mode() || !self.core.sel.is_collapsed();
         let bottom = if above_counter { px(52.) } else { px(24.) };
-        Some(
+        let chip = |id: &'static str, ic: &'static str, tip_zh: &'static str, tip_en: &'static str| {
             div()
-                .id("back-to-top")
-                .absolute()
-                .bottom(bottom)
-                .right(px(24.))
+                .id(id)
                 .size(px(36.))
                 .rounded_full()
                 .flex()
@@ -1708,17 +1730,30 @@ impl Editor {
                 .shadow(theme::shadow_button())
                 .hover(|s| s.bg(Theme::fill_hover()))
                 .active(|s| s.bg(Theme::fill_pressed()))
-                .child(icon("arrow-up", 18., crate::theme::Theme::icon()))
-                .tip_above(crate::settings::tr("回到顶部", "Back to top"), None)
+                .child(icon(ic, 18., crate::theme::Theme::icon()))
+                .tip_above(crate::settings::tr(tip_zh, tip_en), None)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|ed, _, _, cx| {
+        };
+        let mut col = div().absolute().bottom(bottom).right(px(24.)).flex().flex_col().gap(px(8.));
+        if show_mark {
+            col = col.child(
+                chip("jump-read-mark", "bookmark", "跳到阅读标记", "Jump to reading mark").on_click(cx.listener(|ed, _, _, cx| {
+                    cx.stop_propagation();
+                    ed.jump_to_read_mark(cx);
+                })),
+            );
+        }
+        if show_top {
+            col = col.child(
+                chip("back-to-top", "arrow-up", "回到顶部", "Back to top").on_click(cx.listener(|ed, _, _, cx| {
                     cx.stop_propagation();
                     ed.list.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.) });
                     ed.show_back_to_top = false;
                     cx.notify();
-                }))
-                .into_any_element(),
-        )
+                })),
+            );
+        }
+        Some(col.into_any_element())
     }
 
     /// "N 字" chip at the bottom right while text is selected (§2).
@@ -1926,6 +1961,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             .child(content)
             .child(record_bounds(b.id, self.bounds.clone()))
             .children(handle)
+            .children(self.read_mark_gutter(b.id, env, cx))
             .children(self.fold_button(b, env, cx))
             .when(!self.ghost && self.ed.is_dragged(b.id), |d| d.opacity(0.5))
             .children(self.ed.drop_flash_el(b.id).filter(|_| !self.ghost))

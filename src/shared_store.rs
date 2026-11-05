@@ -32,4 +32,5 @@ impl SharedStore {
     pub fn set_parent(&mut self, id: &str, parent: Option<&str>) -> Result<Meta> { self.0.borrow_mut().set_parent(id, parent) }
     pub fn set_starred(&mut self, id: &str, on: bool) -> Result<u64> { self.0.borrow_mut().set_starred(id, on) }
     pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<()> { self.0.borrow_mut().set_pinned(id, pinned) }
+    pub fn set_read_mark(&mut self, id: &str, mark: Option<&str>) -> Result<()> { self.0.borrow_mut().set_read_mark(id, mark) }
 }

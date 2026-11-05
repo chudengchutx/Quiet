@@ -40,6 +40,8 @@ pub enum EditorEvent {
     Toast,
     /// A 创建副本 button was clicked.
     Duplicate,
+    /// 「读到这里」 mark changed: `Some(ordinal)` or `None` to clear.
+    ReadMark(Option<String>),
 }
 
 /// A child page shown by 子页面列表 blocks.
@@ -200,6 +202,8 @@ pub struct Editor {
     /// Whether the floating back-to-top control was shown last frame (for
     /// paint→notify when scroll crosses the show/hide threshold).
     pub(super) show_back_to_top: bool,
+    /// 「读到这里」: live block id (ordinal persisted in Meta.read_mark).
+    pub read_mark: Option<BlockId>,
     /// Column-gap hover: (grid, gap index, over the 新增分栏 circle).
     pub(super) gap_hover: Option<(BlockId, usize, bool)>,
     pub(super) col_drag: Option<super::grid::ColDrag>,
@@ -417,6 +421,7 @@ impl Editor {
             cat_scroll: UniformListScrollHandle::new(),
             scrollbar: Rc::default(),
             show_back_to_top: false,
+            read_mark: None,
             gap_hover: None,
             col_drag: None,
             block_drag: None,
@@ -503,6 +508,7 @@ impl Editor {
             self.hide_link_card(cx);
             cx.emit(EditorEvent::Changed);
             self.refresh_find(false, cx);
+            self.sync_read_mark(cx);
         }
         // A folded code block opens once the caret is inside it.
         if !self.core.in_block_mode() {
@@ -2443,6 +2449,16 @@ impl Editor {
             BlockAct::HeaderRow => self.core.table_toggle_header_row(block),
             BlockAct::HeaderCol => self.core.table_toggle_header_col(block),
             BlockAct::DistributeCols => self.core.table_distribute(block),
+            BlockAct::ReadMark => {
+                self.set_read_mark(Some(block), cx);
+                window.focus(&self.focus);
+                return;
+            }
+            BlockAct::ClearReadMark => {
+                self.set_read_mark(None, cx);
+                window.focus(&self.focus);
+                return;
+            }
         }
         window.focus(&self.focus);
         self.changed(window, cx);
@@ -2454,6 +2470,65 @@ impl Editor {
             self.core.sel = Selection::caret(Pos::new(u.id, 0));
         }
         cx.notify();
+    }
+
+    /// `for_each_block` ordinal of `id`, for Meta.read_mark.
+    pub fn read_mark_ordinal(doc: &Document, id: BlockId) -> Option<usize> {
+        let mut n = 0;
+        let mut found = None;
+        doc.for_each_block(|b| {
+            if b.id == id {
+                found = Some(n);
+            }
+            n += 1;
+        });
+        found
+    }
+
+    /// Resolve a persisted ordinal back to a live block id.
+    pub fn block_at_ordinal(doc: &Document, ordinal: usize) -> Option<BlockId> {
+        let mut n = 0;
+        let mut found = None;
+        doc.for_each_block(|b| {
+            if n == ordinal {
+                found = Some(b.id);
+            }
+            n += 1;
+        });
+        found
+    }
+
+    /// Apply a Meta.read_mark string on open; drops a stale ordinal quietly.
+    pub fn load_read_mark(&mut self, mark: Option<&str>) {
+        self.read_mark = mark
+            .and_then(|s| s.parse::<usize>().ok())
+            .and_then(|ord| Self::block_at_ordinal(&self.core.doc, ord));
+    }
+
+    /// Set / clear the reading mark and tell the workspace to persist it.
+    pub fn set_read_mark(&mut self, id: Option<BlockId>, cx: &mut Context<Self>) {
+        self.read_mark = id.filter(|b| Self::read_mark_ordinal(&self.core.doc, *b).is_some());
+        let payload = self.read_mark.and_then(|b| Self::read_mark_ordinal(&self.core.doc, b)).map(|n| n.to_string());
+        cx.emit(EditorEvent::ReadMark(payload));
+        cx.notify();
+    }
+
+    /// After edits: keep the mark's ordinal in sync, or clear if the block is gone.
+    pub fn sync_read_mark(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.read_mark else { return };
+        match Self::read_mark_ordinal(&self.core.doc, id) {
+            Some(n) => cx.emit(EditorEvent::ReadMark(Some(n.to_string()))),
+            None => {
+                self.read_mark = None;
+                cx.emit(EditorEvent::ReadMark(None));
+            }
+        }
+    }
+
+    pub fn jump_to_read_mark(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.read_mark {
+            self.scroll_to_block(id, cx);
+        }
     }
 
     // ---- typing
@@ -2551,6 +2626,9 @@ pub enum BlockAct {
     HeaderRow,
     HeaderCol,
     DistributeCols,
+    /// 「标记读到这里」 / 「清除阅读标记」.
+    ReadMark,
+    ClearReadMark,
 }
 
 impl EntityInputHandler for Editor {

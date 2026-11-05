@@ -777,11 +777,22 @@ impl Editor {
             m = m.child(row("bm-color", "palette", crate::settings::text("颜色"), Some("›"), sub == Some(BlockSub::Color)).on_mouse_move(set_sub(Some(BlockSub::Color))));
         }
         let adding = matches!(sub, Some(BlockSub::Add(_)));
+        let marked = self.read_mark == Some(block);
+        let mark_row = if marked {
+            row("bm-read-mark", "bookmark", crate::settings::tr("清除阅读标记", "Clear reading mark"), None, false)
+                .on_mouse_move(set_sub(None))
+                .on_mouse_down(MouseButton::Left, act(BlockAct::ClearReadMark))
+        } else {
+            row("bm-read-mark", "bookmark", crate::settings::tr("标记读到这里", "Mark reading position"), None, false)
+                .on_mouse_move(set_sub(None))
+                .on_mouse_down(MouseButton::Left, act(BlockAct::ReadMark))
+        };
         m = m
             .child(separator_h().on_mouse_move(set_sub(None)))
             .child(row("bm-cut", "scissors", crate::settings::text("剪切"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Cut)))
             .child(row("bm-copy", "copy", crate::settings::text("复制"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Copy)))
             .child(row("bm-del", "trash-2", crate::settings::text("删除"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Delete)))
+            .child(mark_row)
             .child(separator_h().on_mouse_move(set_sub(None)))
             .child(add_below_row(adding, cx));
         let color_y = indent_y + 32.;
@@ -853,9 +864,10 @@ impl Editor {
     /// Top of the 在下方添加 row inside the handle menu (mirrors its layout).
     fn block_menu_add_y(&self, block: BlockId) -> f32 {
         let Some(b) = self.core.block(block) else { return 0. };
-        // separators are 9 tall, rows 32; 剪切 / 复制 / 删除 sit between two.
-        let tail = 9. + 32. * 3. + 9.;
+        // separators are 9 tall, rows 32; 剪切 / 复制 / 删除 / 阅读标记 sit between two.
+        let tail = 9. + 32. * 4. + 9.;
         if matches!(b.kind, BlockKind::Table(_)) {
+            // indent + tail + 标题行/列/均分 + sep before 在下方添加.
             return 8. + 32. + tail + 32. * 3. + 9.;
         }
         let shape = menus::MenuShape::of(&b.kind);
@@ -1970,6 +1982,11 @@ impl Editor {
             .child(plain("bm-cut", "scissors", crate::settings::text("剪切"), BlockAct::Cut))
             .child(plain("bm-copy", "copy", crate::settings::text("复制"), BlockAct::Copy))
             .child(plain("bm-del", "trash-2", crate::settings::text("删除"), BlockAct::Delete))
+            .child(if self.read_mark == Some(block) {
+                plain("bm-read-mark", "bookmark", crate::settings::tr("清除阅读标记", "Clear reading mark"), BlockAct::ClearReadMark)
+            } else {
+                plain("bm-read-mark", "bookmark", crate::settings::tr("标记读到这里", "Mark reading position"), BlockAct::ReadMark)
+            })
             .child(separator_h().on_mouse_move(set_sub(None)))
             .child(toggle("bm-hrow", "header-row", crate::settings::text("标题行"), hrow, BlockAct::HeaderRow))
             .child(toggle("bm-hcol", "header-col", crate::settings::text("标题列"), hcol, BlockAct::HeaderCol))

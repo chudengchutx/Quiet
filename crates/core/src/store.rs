@@ -45,6 +45,10 @@ pub struct Meta {
     /// 隐藏引用列表 (the "…" menu's 显示引用列表 switch off).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refs_hidden: bool,
+    /// 阅读标记: `for_each_block` ordinal of the block the user marked
+    /// 「读到这里」(decimal string). Cleared when the block is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_mark: Option<String>,
 }
 
 fn catalogue_closed_default() -> bool { true }
@@ -55,7 +59,7 @@ impl Default for Meta {
             created: 0, modified: 0, pinned: false, opened: 0,
             width: PageWidth::default(), catalogue_closed: true,
             parent: None, order: 0, starred: 0, reading: false,
-            info: InfoRow::default(), refs_hidden: false,
+            info: InfoRow::default(), refs_hidden: false, read_mark: None,
         }
     }
 }
@@ -704,6 +708,15 @@ impl Store {
         }
         self.save_index()
     }
+
+    /// 「读到这里」: persist / clear the reading mark (block ordinal string).
+    pub fn set_read_mark(&mut self, id: &str, mark: Option<&str>) -> Result<()> {
+        let _lock = self.begin_write();
+        if let Some(m) = self.index.get_mut(id) {
+            m.read_mark = mark.map(str::to_string);
+        }
+        self.save_index()
+    }
 }
 
 #[cfg(test)]
@@ -746,6 +759,18 @@ mod tests {
         assert_eq!(list[0].title, "一");
         assert!(list[0].meta.pinned);
         assert!(lib.0.join("format.json").is_file());
+    }
+
+    #[test]
+    fn read_mark_survives_reopen() {
+        let lib = Lib::new("read-mark");
+        let mut s = lib.open();
+        let id = s.create_from(&doc("一")).unwrap();
+        s.set_read_mark(&id, Some("3")).unwrap();
+        let mut s = lib.open();
+        assert_eq!(s.list()[0].meta.read_mark.as_deref(), Some("3"));
+        s.set_read_mark(&id, None).unwrap();
+        assert!(lib.open().list()[0].meta.read_mark.is_none());
     }
 
     #[test]

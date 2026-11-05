@@ -505,6 +505,7 @@ impl Workspace {
                 e.created = m.created;
                 e.info = m.info;
                 e.set_read_only(m.reading, cx);
+                e.load_read_mark(m.read_mark.as_deref());
             }
             e
         });
@@ -512,6 +513,18 @@ impl Workspace {
         if let Some(peer) = self.document_peers(id, window, cx).first() {
             let core = peer.read(cx).core.clone();
             editor.update(cx, |e, cx| e.receive_document(&core, cx));
+        }
+        // Marked block gone since last open: clear Meta quietly.
+        if let Some(m) = &meta {
+            if m.read_mark.is_some() {
+                let alive = editor.read(cx).read_mark.is_some();
+                if !alive {
+                    if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
+                        e.meta.read_mark = None;
+                    }
+                    let _ = self.store.set_read_mark(id, None);
+                }
+            }
         }
         self.editor_sub = Some(cx.subscribe_in(&editor, window, |this, _, ev: &EditorEvent, window, cx| match ev {
             EditorEvent::Changed => {
@@ -550,6 +563,17 @@ impl Workspace {
                         e.meta.catalogue_closed = !pinned;
                     }
                     let _ = this.store.set_catalogue(&id, *pinned);
+                }
+            }
+            EditorEvent::ReadMark(mark) => {
+                if let Some(id) = this.current.clone() {
+                    let cur = this.entries.iter().find(|e| e.id == id).and_then(|e| e.meta.read_mark.clone());
+                    if cur.as_deref() != mark.as_deref() {
+                        if let Some(e) = this.entries.iter_mut().find(|e| e.id == id) {
+                            e.meta.read_mark = mark.clone();
+                        }
+                        let _ = this.store.set_read_mark(&id, mark.as_deref());
+                    }
                 }
             }
         }));
