@@ -281,13 +281,18 @@ fn sheet_block(b: &ApiBlock, opts: &MapOptions) -> Block {
     }
     // Missing or empty fetch → readable placeholder, never raw JSON.
     let tag = "feishu-sheet".to_string();
+    let label = unsupported_label("sheet");
     let token = b.sheet.as_ref().map(|s| s.token.as_str()).unwrap_or("");
     let xml = if token.is_empty() {
-        format!("<{tag} type=\"30\">飞书电子表格（无内容）</{tag}>")
+        format!(
+            "<{tag} type=\"30\" kind=\"sheet\" label=\"{}\">{label}（无内容）</{tag}>",
+            escape_xml(label)
+        )
     } else {
         format!(
-            "<{tag} type=\"30\" token=\"{}\">飞书电子表格（未能加载内容）</{tag}>",
-            escape_xml(token)
+            "<{tag} type=\"30\" kind=\"sheet\" token=\"{token}\" label=\"{lab}\">{label}（未能加载内容）</{tag}>",
+            token = escape_xml(token),
+            lab = escape_xml(label),
         )
     };
     Block::new(BlockKind::Raw { tag, xml }, RichText::plain(""))
@@ -339,7 +344,8 @@ fn unsupported_kind(block_type: i32) -> &'static str {
     }
 }
 
-fn unsupported_label(kind: &str) -> &'static str {
+/// Chinese UI label for an unsupported Feishu kind slug (`board`, `sheet`, …).
+pub fn unsupported_label(kind: &str) -> &'static str {
     match kind {
         "sheet" => "飞书电子表格",
         "board" => "飞书画板",
@@ -356,6 +362,50 @@ fn unsupported_label(kind: &str) -> &'static str {
     }
 }
 
+/// Label for a Raw tag such as `feishu-board` (used by the editor card UI).
+pub fn label_for_raw_tag(tag: &str) -> Option<&'static str> {
+    let kind = tag.strip_prefix("feishu-").unwrap_or(tag);
+    if tag.starts_with("feishu-")
+        || matches!(
+            kind,
+            "sheet"
+                | "board"
+                | "bitable"
+                | "mindnote"
+                | "chat_card"
+                | "iframe"
+                | "view"
+                | "task"
+                | "agenda"
+                | "link_preview"
+                | "isv"
+                | "unsupported"
+        )
+    {
+        Some(unsupported_label(kind))
+    } else {
+        None
+    }
+}
+
+/// Human card title + optional open URL extracted from Raw XML.
+///
+/// Prefers the `label` attribute (aligned with import), then element text,
+/// then the Feishu tag → Chinese label table.
+pub fn raw_card_info(tag: &str, xml: &str) -> (String, Option<String>) {
+    let (text, link) = crate::docxml::raw_summary(xml);
+    let label = crate::docxml::raw_attr(xml, "label")
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| (!text.is_empty()).then_some(text))
+        .or_else(|| label_for_raw_tag(tag).map(str::to_string))
+        .unwrap_or_else(|| tag.to_string());
+    let open = link.filter(|u| {
+        let u = u.trim();
+        u.starts_with("http://") || u.starts_with("https://")
+    });
+    (label, open)
+}
+
 fn raw_block(b: &ApiBlock) -> Block {
     // Never dump API JSON into document XML — always a well-formed element.
     let kind = unsupported_kind(b.block_type);
@@ -364,7 +414,12 @@ fn raw_block(b: &ApiBlock) -> Block {
     } else {
         format!("feishu-{kind}")
     };
-    let mut attrs = format!("type=\"{}\" kind=\"{}\"", b.block_type, kind);
+    let label = unsupported_label(kind);
+    let mut attrs = format!(
+        "type=\"{}\" kind=\"{kind}\" label=\"{}\"",
+        b.block_type,
+        escape_xml(label)
+    );
     if let Some(sheet) = &b.sheet {
         if !sheet.token.is_empty() {
             attrs.push_str(&format!(" token=\"{}\"", escape_xml(&sheet.token)));
@@ -375,7 +430,6 @@ fn raw_block(b: &ApiBlock) -> Block {
             attrs.push_str(&format!(" token=\"{}\"", escape_xml(&board.token)));
         }
     }
-    let label = unsupported_label(kind);
     let xml = format!("<{tag} {attrs}>{label}</{tag}>");
     Block::new(BlockKind::Raw { tag, xml }, RichText::plain(""))
 }
@@ -716,5 +770,18 @@ mod tests {
         assert!(!xml.contains('{'), "{xml}");
         assert!(xml.contains("飞书画板"), "{xml}");
         assert!(xml.contains("BOARDTOK"), "{xml}");
+        assert!(xml.contains("label=\"飞书画板\""), "{xml}");
+        let (card, open) = raw_card_info(tag, xml);
+        assert_eq!(card, "飞书画板");
+        assert!(open.is_none());
+    }
+
+    #[test]
+    fn raw_card_prefers_xml_text_and_http_link() {
+        let xml = r#"<feishu-board type="43" kind="board" label="飞书画板" url="https://my.feishu.cn/board/TOK">飞书画板</feishu-board>"#;
+        let (label, open) = raw_card_info("feishu-board", xml);
+        assert_eq!(label, "飞书画板");
+        assert_eq!(open.as_deref(), Some("https://my.feishu.cn/board/TOK"));
+        assert_eq!(label_for_raw_tag("feishu-bitable"), Some("飞书多维表格"));
     }
 }

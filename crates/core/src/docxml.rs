@@ -586,13 +586,30 @@ fn reminder_of(e: &Element) -> Option<InlineReminder> {
 
 /// What an export can show for an element we keep verbatim: its text
 /// content, and the first link-like attribute (`href`, `url`, `src`, ...).
+pub fn raw_attr(xml: &str, key: &str) -> Option<String> {
+    let Ok(nodes) = parse_dom(xml) else { return None };
+    nodes.iter().find_map(|n| match n {
+        Node::El(e) => e.attr(key).map(str::to_string),
+        Node::Text(_) => None,
+    })
+}
+
 pub fn raw_summary(xml: &str) -> (String, Option<String>) {
     let Ok(nodes) = parse_dom(xml) else { return (String::new(), None) };
-    let link = nodes.iter().find_map(|n| match n {
-        Node::El(e) => ["href", "url", "src", "link"].iter().find_map(|k| e.attr(k)).map(str::to_string),
-        Node::Text(_) => None,
-    });
-    (code_text(&nodes).trim().to_string(), link)
+    let mut link = None;
+    let mut label_attr = None;
+    for n in &nodes {
+        let Node::El(e) = n else { continue };
+        if link.is_none() {
+            link = ["href", "url", "src", "link"].iter().find_map(|k| e.attr(k)).map(str::to_string);
+        }
+        if label_attr.is_none() {
+            label_attr = e.attr("label").map(str::to_string);
+        }
+    }
+    let text = code_text(&nodes).trim().to_string();
+    let text = if text.is_empty() { label_attr.unwrap_or_default() } else { text };
+    (text, link)
 }
 
 fn code_text(nodes: &[Node]) -> String {

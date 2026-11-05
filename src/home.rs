@@ -238,7 +238,28 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             for child in &b.children { node = node.child(div().py(px(9. * s)).px(px(6. * s)).flex().items_start().gap(px(6. * s)).child(icon("doc", 16. * s, Theme::text_caption())).child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(child.text.text.clone()))); }
             return node.into_any_element();
         }
-        BlockKind::Raw { tag, .. } => return node.p(px(8. * s)).rounded(px(8. * s)).bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child(crate::localized_format!("<{tag}> 已保留的内容", "<{tag}> Preserved content")).into_any_element(),
+        BlockKind::Raw { tag, xml } => {
+            let (label, _) = fdl_core::feishu::raw_card_info(tag, xml);
+            return node
+                .p(px(8. * s))
+                .rounded(px(8. * s))
+                .bg(Theme::bg_overlay())
+                .flex()
+                .flex_col()
+                .gap(px(2. * s))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(Theme::text())
+                        .child(format!("「{label}」")),
+                )
+                .child(
+                    div()
+                        .text_color(Theme::text_caption())
+                        .child(crate::localized_format!("已保留的内容", "Preserved content")),
+                )
+                .into_any_element();
+        }
         _ => {}
     }
     if b.kind.has_text() {

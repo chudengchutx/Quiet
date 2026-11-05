@@ -73,6 +73,73 @@ fn outer_ring(color: Hsla) -> Div {
     div().absolute().top(px(-2.)).left(px(-2.)).right(px(-2.)).bottom(px(-2.)).rounded(px(9.)).border_1().border_color(color)
 }
 
+/// Unsupported / preserved Raw block: Chinese-friendly card from XML label text.
+fn raw_unsupported_card(
+    tag: &str,
+    xml: &str,
+    rounded: f32,
+    title_size: f32,
+    caption_size: f32,
+    line_height: f32,
+    bg: Hsla,
+    title_color: Hsla,
+    caption_color: Hsla,
+    link_color: Hsla,
+    interactive: bool,
+    cx: &mut Context<Editor>,
+) -> AnyElement {
+    let (label, open) = fdl_core::feishu::raw_card_info(tag, xml);
+    let title = format!("「{label}」");
+    let caption = crate::localized_format!(
+        "本地版暂不支持编辑，已原样保留",
+        "Editing is not supported; original content is preserved"
+    );
+    let mut card = div()
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(rounded))
+        .bg(bg)
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .text_size(px(title_size))
+                .line_height(px(line_height))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(title_color)
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(caption_size))
+                .line_height(px(line_height))
+                .text_color(caption_color)
+                .child(caption),
+        );
+    if interactive {
+        if let Some(url) = open {
+            card = card.child(
+                div()
+                    .mt(px(4.))
+                    .text_size(px(caption_size))
+                    .line_height(px(line_height))
+                    .text_color(link_color)
+                    .cursor_pointer()
+                    .child(crate::settings::tr("在飞书打开", "Open in Feishu"))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.open_url(&url);
+                        }),
+                    ),
+            );
+        }
+    }
+    card.into_any_element()
+}
+
 impl Editor {
     /// Fill and radius of selected blocks: `.block.hovered` while the handle
     /// menu is open, else `.selected-mask`.
@@ -435,16 +502,20 @@ impl R<'_> {
             BlockKind::Table(t) => self.table(b, t, cx),
             BlockKind::Grid => self.grid(b, env, cx),
             BlockKind::Column { .. } => self.blocks(&b.children, env, cx).into_any_element(),
-            BlockKind::Raw { tag, .. } => div()
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(5.))
-                .bg(Theme::bg_overlay())
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .text_color(Theme::text_caption())
-                .child(crate::localized_format!("<{tag}> 本地版暂不支持编辑，已原样保留", "<{tag}> Editing is not supported; original content is preserved"))
-                .into_any_element(),
+            BlockKind::Raw { tag, xml } => raw_unsupported_card(
+                tag,
+                xml,
+                5.,
+                14.,
+                12.,
+                20.,
+                Theme::bg_overlay(),
+                Theme::text(),
+                Theme::text_caption(),
+                Theme::link(),
+                !self.ghost,
+                cx,
+            ),
         };
         let atomic_sel = !self.ghost
             && !b.kind.has_text()
@@ -1800,16 +1871,20 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             BlockKind::Table(t) => self.table(b, t, cx),
             BlockKind::Grid => self.grid(b, env, cx),
             BlockKind::Column { .. } => self.blocks(&b.children, env, cx).into_any_element(),
-            BlockKind::Raw { tag, .. } => div()
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(8.))
-                .bg(Theme::bg_overlay())
-                .text_size(px(14.))
-                .line_height(px(22.))
-                .text_color(Theme::text_caption())
-                .child(crate::localized_format!("<{tag}> 本地版暂不支持编辑，已原样保留", "<{tag}> Editing is not supported; original content is preserved"))
-                .into_any_element(),
+            BlockKind::Raw { tag, xml } => raw_unsupported_card(
+                tag,
+                xml,
+                8.,
+                15.,
+                13.,
+                22.,
+                Theme::bg_overlay(),
+                Theme::text(),
+                Theme::text_caption(),
+                Theme::link(),
+                !self.ghost,
+                cx,
+            ),
         };
         let atomic_sel = !self.ghost
             && !b.kind.has_text()
