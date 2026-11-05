@@ -4,7 +4,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// `GET /docx/v1/documents/:document_id` → `data.document`.
-#[derive(Clone, Debug, Deserialize)]
+///
+/// Cover comes from `document.cover` (`token` + offset ratios). Document title
+/// icons are a Feishu UI feature with no documented Docx OpenAPI field today
+/// (not on document meta or the page block), so importers leave `icon` unset.
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct DocumentMeta {
     #[serde(default)]
     pub document_id: String,
@@ -12,6 +16,20 @@ pub struct DocumentMeta {
     pub revision_id: i64,
     #[serde(default)]
     pub title: String,
+    /// Banner cover when the doc has one; absent/`null` → no cover.
+    #[serde(default)]
+    pub cover: Option<DocumentCover>,
+}
+
+/// `document.cover` from the Docx document meta endpoint.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct DocumentCover {
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub offset_ratio_x: f32,
+    #[serde(default)]
+    pub offset_ratio_y: f32,
 }
 
 /// One item from `GET .../blocks` (`data.items[]`).

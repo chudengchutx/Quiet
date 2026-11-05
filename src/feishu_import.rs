@@ -143,6 +143,7 @@ pub fn fetch_document(
             document_id: doc.document_id.clone(),
             revision_id: 0,
             title: String::new(),
+            ..Default::default()
         });
 
     let mut items = Vec::new();
@@ -230,12 +231,14 @@ pub fn download_media_token(
     Ok(path)
 }
 
-/// Download media tokens referenced by image/file blocks into `assets_dir`.
+/// Download media tokens referenced by image/file blocks (and optional extras
+/// such as the document cover token) into `assets_dir`.
 pub fn download_media(
     blocks: &[ApiBlock],
     auth: &FeishuAuth,
     host: &str,
     assets_dir: &Path,
+    extra_tokens: &[String],
 ) -> Result<HashMap<String, String>> {
     std::fs::create_dir_all(assets_dir)?;
     let mut map = HashMap::new();
@@ -246,6 +249,12 @@ pub fn download_media(
         }
         if let Some(f) = &b.file {
             if !f.token.is_empty() { tokens.push(f.token.clone()); }
+        }
+    }
+    for t in extra_tokens {
+        let t = t.trim();
+        if !t.is_empty() {
+            tokens.push(t.to_string());
         }
     }
     tokens.sort();
@@ -466,6 +475,12 @@ pub fn import_from_url(
     }
     let auth = prepare_auth(auth, &doc_ref.host)?;
     let (meta, blocks) = fetch_document(url, &auth, on_progress)?;
+    let cover_token = meta
+        .cover
+        .as_ref()
+        .map(|c| c.token.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let extra: Vec<String> = cover_token.into_iter().collect();
     let media_n = {
         let mut tokens = Vec::new();
         for b in &blocks {
@@ -479,6 +494,9 @@ pub fn import_from_url(
                     tokens.push(f.token.as_str());
                 }
             }
+        }
+        for t in &extra {
+            tokens.push(t.as_str());
         }
         tokens.sort();
         tokens.dedup();
@@ -494,7 +512,7 @@ pub fn import_from_url(
             ),
         );
     }
-    let media = download_media(&blocks, &auth, &doc_ref.host, assets_dir)?;
+    let media = download_media(&blocks, &auth, &doc_ref.host, assets_dir, &extra)?;
     let sheets = fetch_sheet_values(&blocks, &auth, &doc_ref.host, on_progress);
     report(on_progress, "正在整理文档…");
     let opts = MapOptions { media, sheets };

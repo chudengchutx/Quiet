@@ -1,7 +1,7 @@
 //! Map Feishu Open API blocks into quiet.md `Document` / `Block`.
 
 use crate::model::{
-    Align, Block, BlockKind, ColorName, Document, FileBlock, FileView, Inline, InlineKind,
+    Align, Block, BlockKind, ColorName, Cover, Document, FileBlock, FileView, Inline, InlineKind,
     Marks, RichText, Table, TableCell,
 };
 use crate::feishu::types::{ApiBlock, DocumentMeta, TextContainer, TextElement, TextElementStyle};
@@ -55,7 +55,25 @@ pub fn document_from_blocks(meta: &DocumentMeta, blocks: &[ApiBlock], opts: &Map
     if out.is_empty() {
         out.push(Block::text(""));
     }
-    Document { title, icon: None, cover: None, blocks: out }
+    // Title icon: Feishu Docx OpenAPI has no documented field (UI-only today).
+    let icon = None;
+    let cover = meta.cover.as_ref().and_then(|c| map_cover(c, opts));
+    Document { title, icon, cover, blocks: out }
+}
+
+/// Map Feishu `document.cover` into quiet.md `Cover` when the media token resolved.
+/// Missing token / failed download → `None` (soft-fail; import still succeeds).
+fn map_cover(c: &crate::feishu::types::DocumentCover, opts: &MapOptions) -> Option<Cover> {
+    let token = c.token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let src = opts.media.get(token).cloned()?;
+    Some(Cover {
+        src,
+        x: c.offset_ratio_x,
+        y: c.offset_ratio_y,
+    })
 }
 
 fn map_block(b: &ApiBlock, by_id: &HashMap<&str, &ApiBlock>, opts: &MapOptions) -> Vec<Block> {
@@ -635,6 +653,57 @@ mod tests {
     }
 
     #[test]
+    fn maps_cover_from_meta_media() {
+        let page = {
+            let mut p = text_block("p", "", "T", 1);
+            p.children = vec![];
+            p
+        };
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 1,
+            title: "T".into(),
+            cover: Some(crate::feishu::types::DocumentCover {
+                token: "COVTOK".into(),
+                offset_ratio_x: 0.1,
+                offset_ratio_y: -0.25,
+            }),
+            ..Default::default()
+        };
+        let mut opts = MapOptions::default();
+        opts.media.insert("COVTOK".into(), "/tmp/assets/COVTOK".into());
+        let doc = document_from_blocks(&meta, &[page], &opts);
+        assert_eq!(
+            doc.cover,
+            Some(Cover { src: "/tmp/assets/COVTOK".into(), x: 0.1, y: -0.25 })
+        );
+        assert!(doc.icon.is_none());
+    }
+
+    #[test]
+    fn cover_without_downloaded_media_is_none() {
+        let page = {
+            let mut p = text_block("p", "", "T", 1);
+            p.children = vec![];
+            p
+        };
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 1,
+            title: "T".into(),
+            cover: Some(crate::feishu::types::DocumentCover {
+                token: "MISSING".into(),
+                offset_ratio_x: 0.,
+                offset_ratio_y: 0.,
+            }),
+            ..Default::default()
+        };
+        let doc = document_from_blocks(&meta, &[page], &MapOptions::default());
+        assert!(doc.cover.is_none());
+        assert!(doc.icon.is_none());
+    }
+
+    #[test]
     fn maps_heading_and_bullet() {
         let page = text_block("p", "", "Title", 1);
         let mut page = page;
@@ -645,6 +714,7 @@ mod tests {
             document_id: "d".into(),
             revision_id: 1,
             title: "Title".into(),
+            ..Default::default()
         };
         let doc = document_from_blocks(&meta, &[page, h, bullet], &MapOptions::default());
         assert_eq!(doc.title.text, "Title");
@@ -669,6 +739,7 @@ mod tests {
             document_id: "d".into(),
             revision_id: 0,
             title: "T".into(),
+            ..Default::default()
         };
         let doc = document_from_blocks(&meta, &[page, unknown], &MapOptions::default());
         let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {
@@ -697,6 +768,7 @@ mod tests {
             document_id: "d".into(),
             revision_id: 0,
             title: "T".into(),
+            ..Default::default()
         };
         let mut opts = MapOptions::default();
         opts.sheets.insert(
@@ -734,6 +806,7 @@ mod tests {
             document_id: "d".into(),
             revision_id: 0,
             title: "T".into(),
+            ..Default::default()
         };
         let doc = document_from_blocks(&meta, &[page, sheet], &MapOptions::default());
         let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {
@@ -761,6 +834,7 @@ mod tests {
             document_id: "d".into(),
             revision_id: 0,
             title: "T".into(),
+            ..Default::default()
         };
         let doc = document_from_blocks(&meta, &[page, board], &MapOptions::default());
         let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {

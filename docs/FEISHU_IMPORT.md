@@ -6,6 +6,8 @@
 
 - 解析 `*.feishu.cn` / `*.larksuite.com` 的 `/docx/` 与 `/wiki/` 链接
 - 用 Open API 拉文档 meta + 全部分块，映射进 quiet.md 的 `Document`
+- 文档封面：`GET .../documents/:id` 的 `document.cover`（`token` / `offset_ratio_x` / `offset_ratio_y`）→ quiet.md `Cover`；封面图按媒体 token 下载到 `assets/`
+- 文档图标：飞书 Docx OpenAPI 目前不返回标题图标（仅客户端 UI），导入后保持无图标
 - 图片 / 文件按 `file_token` 下载到库的 `assets/`
 - 内嵌电子表格（`block_type` 30）通过 Sheets API 展开为本地 `table`（有界并行拉取，导入对话框显示阶段进度）
 - 未建模的块类型写成带可读标签的 `BlockKind::Raw` 占位（如画板 / 多维表），**不会**把 API JSON 写入文档 XML
