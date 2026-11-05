@@ -190,12 +190,18 @@ pub struct Equation {
     pub content: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct MentionDoc {
     #[serde(default)]
     pub token: String,
+    /// Display title when the API includes one (not always present).
     #[serde(default)]
     pub title: String,
+    /// Cloud-doc link (often URL-encoded). Kept for future open/resolve.
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub obj_type: i32,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]

@@ -1,10 +1,13 @@
 //! Map Feishu Open API blocks into quiet.md `Document` / `Block`.
 
 use crate::model::{
-    Align, Block, BlockKind, ColorName, Cover, Document, FileBlock, FileView, Inline, InlineKind,
-    Marks, RichText, Table, TableCell,
+    Align, Block, BlockKind, ColorName, Cover, Document, FileBlock, FileView, Inline, InlineDocLink,
+    InlineKind, InlineReminder, Marks, RichText, Table, TableCell,
 };
-use crate::feishu::types::{ApiBlock, DocumentMeta, TextContainer, TextElement, TextElementStyle};
+use crate::feishu::types::{
+    ApiBlock, DocumentMeta, MentionDoc, TextContainer, TextElement, TextElementStyle,
+};
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// How media tokens become local paths. The app fills this after download.
@@ -467,15 +470,99 @@ fn rich_from_elements(elements: &[TextElement]) -> RichText {
             });
             rt.push("\u{fffc}", marks);
         } else if let Some(doc) = &el.mention_doc {
-            let title = if doc.title.is_empty() { &doc.token } else { &doc.title };
-            let mut marks = Marks::default();
-            marks.link = Some(format!("feishu-doc:{}", doc.token));
-            rt.push(title, marks);
-        } else if el.mention_user.is_some() {
-            rt.push("@user", Marks::default());
+            push_mention_doc(&mut rt, doc);
+        } else if let Some(user) = &el.mention_user {
+            push_mention_user(&mut rt, user);
+        } else if let Some(rem) = &el.reminder {
+            push_reminder(&mut rt, rem);
         }
+        // Soft-fail: unknown / empty TextElement variants contribute nothing.
     }
     rt
+}
+
+/// `@文档` → `InlineDocLink` (token stored as `id` for future local resolve).
+/// Falls back to a titled hyperlink when the token is missing but a URL exists.
+fn push_mention_doc(rt: &mut RichText, doc: &MentionDoc) {
+    if doc.token.is_empty() && doc.title.is_empty() && doc.url.is_empty() {
+        return;
+    }
+    let title = if !doc.title.is_empty() {
+        doc.title.clone()
+    } else if !doc.token.is_empty() {
+        doc.token.clone()
+    } else {
+        "文档".into()
+    };
+    if !doc.token.is_empty() {
+        let inline = crate::docxml::to_inline(InlineKind::DocLink(InlineDocLink {
+            id: doc.token.clone(),
+            title,
+        }));
+        let mut marks = Marks::default();
+        marks.inline = Some(inline);
+        rt.push("\u{fffc}", marks);
+        return;
+    }
+    let mut marks = Marks::default();
+    if !doc.url.is_empty() {
+        marks.link = Some(doc.url.clone());
+    }
+    rt.push(&title, marks);
+}
+
+/// `@user` → readable `@{name}` when the payload carries a name field, else `@用户`.
+fn push_mention_user(rt: &mut RichText, user: &Value) {
+    let name = ["name", "user_name", "display_name", "nickname"]
+        .iter()
+        .find_map(|k| user.get(*k))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let label = match name {
+        Some(n) => format!("@{n}"),
+        None => "@用户".into(),
+    };
+    rt.push(&label, Marks::default());
+}
+
+/// Date reminder → `InlineReminder` when `expire_time` is present; otherwise soft-skip.
+fn push_reminder(rt: &mut RichText, rem: &Value) {
+    let Some(expire) = json_i64(rem.get("expire_time")) else {
+        return;
+    };
+    let notify = json_i64(rem.get("notify_time")).unwrap_or(expire);
+    let should_notify = rem
+        .get("is_notify")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let whole_day = rem
+        .get("is_whole_day")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let inline = crate::docxml::to_inline(InlineKind::Reminder(InlineReminder {
+        expire,
+        notify,
+        should_notify,
+        whole_day,
+    }));
+    let mut marks = Marks::default();
+    marks.inline = Some(inline);
+    rt.push("\u{fffc}", marks);
+}
+
+fn json_i64(v: Option<&Value>) -> Option<i64> {
+    let v = v?;
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    if let Some(n) = v.as_u64() {
+        return n.try_into().ok();
+    }
+    if let Some(n) = v.as_f64() {
+        return Some(n as i64);
+    }
+    v.as_str().and_then(|s| s.trim().parse().ok())
 }
 
 fn marks_from(style: Option<&TextElementStyle>) -> Marks {
@@ -594,7 +681,9 @@ fn escape_xml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feishu::types::{TextElement, TextRun};
+    use crate::feishu::types::{MentionDoc, TextElement, TextRun};
+    use crate::model::{InlineDocLink, InlineKind, InlineReminder};
+    use serde_json::json;
 
     fn text_block(id: &str, parent: &str, content: &str, ty: i32) -> ApiBlock {
         let el = TextElement {
@@ -857,5 +946,145 @@ mod tests {
         assert_eq!(label, "飞书画板");
         assert_eq!(open.as_deref(), Some("https://my.feishu.cn/board/TOK"));
         assert_eq!(label_for_raw_tag("feishu-bitable"), Some("飞书多维表格"));
+    }
+
+    fn empty_el() -> TextElement {
+        TextElement {
+            text_run: None,
+            mention_user: None,
+            mention_doc: None,
+            equation: None,
+            reminder: None,
+        }
+    }
+
+    #[test]
+    fn mention_doc_becomes_inline_doc_link() {
+        let mut el = empty_el();
+        el.mention_doc = Some(MentionDoc {
+            token: "TOK123".into(),
+            title: "设计稿".into(),
+            url: "https://example.feishu.cn/docx/TOK123".into(),
+            obj_type: 22,
+        });
+        let rt = rich_from_elements(&[el]);
+        assert_eq!(rt.text, "\u{fffc}");
+        let inline = rt.runs[0].marks.inline.as_ref().expect("inline");
+        assert_eq!(
+            inline.doc_link(),
+            Some(&InlineDocLink {
+                id: "TOK123".into(),
+                title: "设计稿".into(),
+            })
+        );
+        assert!(inline.xml.contains("cite"), "{}", inline.xml);
+        assert!(inline.xml.contains("TOK123"), "{}", inline.xml);
+        assert!(inline.xml.contains("设计稿"), "{}", inline.xml);
+    }
+
+    #[test]
+    fn mention_doc_without_title_uses_token() {
+        let mut el = empty_el();
+        el.mention_doc = Some(MentionDoc {
+            token: "ONLYTOK".into(),
+            ..Default::default()
+        });
+        let rt = rich_from_elements(&[el]);
+        let link = rt.runs[0].marks.inline.as_ref().unwrap().doc_link().unwrap();
+        assert_eq!(link.id, "ONLYTOK");
+        assert_eq!(link.title, "ONLYTOK");
+    }
+
+    #[test]
+    fn mention_doc_url_only_becomes_titled_link() {
+        let mut el = empty_el();
+        el.mention_doc = Some(MentionDoc {
+            title: "外链文档".into(),
+            url: "https://example.feishu.cn/docx/x".into(),
+            ..Default::default()
+        });
+        let rt = rich_from_elements(&[el]);
+        assert_eq!(rt.text, "外链文档");
+        assert_eq!(
+            rt.runs[0].marks.link.as_deref(),
+            Some("https://example.feishu.cn/docx/x")
+        );
+        assert!(rt.runs[0].marks.inline.is_none());
+    }
+
+    #[test]
+    fn mention_user_uses_name_or_fallback() {
+        let mut named = empty_el();
+        named.mention_user = Some(json!({"user_id": "ou_1", "name": "张三"}));
+        let mut bare = empty_el();
+        bare.mention_user = Some(json!({"user_id": "ou_2"}));
+        let rt = rich_from_elements(&[named, bare]);
+        assert_eq!(rt.text, "@张三@用户");
+    }
+
+    #[test]
+    fn reminder_becomes_inline_reminder() {
+        let mut el = empty_el();
+        el.reminder = Some(json!({
+            "create_user_id": "ou_x",
+            "is_notify": true,
+            "is_whole_day": true,
+            "expire_time": 1_700_000_000_000_i64,
+            "notify_time": 1_699_913_600_000_i64
+        }));
+        let rt = rich_from_elements(&[el]);
+        assert_eq!(rt.text, "\u{fffc}");
+        let rem = rt.runs[0]
+            .marks
+            .inline
+            .as_ref()
+            .unwrap()
+            .reminder()
+            .copied()
+            .unwrap();
+        assert_eq!(
+            rem,
+            InlineReminder {
+                expire: 1_700_000_000_000,
+                notify: 1_699_913_600_000,
+                should_notify: true,
+                whole_day: true,
+            }
+        );
+        assert!(matches!(
+            rt.runs[0].marks.inline.as_ref().unwrap().kind,
+            InlineKind::Reminder(_)
+        ));
+    }
+
+    #[test]
+    fn reminder_string_expire_time_parses() {
+        let mut el = empty_el();
+        el.reminder = Some(json!({
+            "expire_time": "1700000000000",
+            "notify_time": "1700000000000",
+            "is_notify": false,
+            "is_whole_day": false
+        }));
+        let rt = rich_from_elements(&[el]);
+        let rem = rt.runs[0].marks.inline.as_ref().unwrap().reminder().unwrap();
+        assert_eq!(rem.expire, 1_700_000_000_000);
+        assert!(!rem.should_notify);
+        assert!(!rem.whole_day);
+    }
+
+    #[test]
+    fn reminder_without_expire_soft_fails() {
+        let mut el = empty_el();
+        el.reminder = Some(json!({"is_notify": true}));
+        let rt = rich_from_elements(&[el]);
+        assert!(rt.text.is_empty());
+        assert!(rt.runs.is_empty());
+    }
+
+    #[test]
+    fn unknown_text_element_soft_fails() {
+        let rt = rich_from_elements(&[empty_el()]);
+        assert!(rt.text.is_empty());
     }
 }
