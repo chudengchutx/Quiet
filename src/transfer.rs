@@ -494,7 +494,7 @@ impl Workspace {
             })))
             .child(
                 div().pt(px(20.)).px(px(24.)).pb(px(8.))
-                    .child(div().text_size(px(13.)).text_color(Theme::text_caption()).mb(px(8.)).child(crate::settings::text("粘贴飞书 /docx/ 文档链接")))
+                    .child(div().text_size(px(13.)).text_color(Theme::text_caption()).mb(px(8.)).child(crate::settings::text("粘贴飞书文档或知识库链接")))
                     .child(
                         div().h(px(36.)).px(px(10.)).rounded(px(6.)).border_1().border_color(Theme::line_divider())
                             .flex().items_center()

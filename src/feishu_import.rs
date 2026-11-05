@@ -71,13 +71,46 @@ fn curl_bytes(url: &str, token: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
+/// Resolve a wiki node token to a docx `document_id` via `wiki/v2/spaces/get_node`.
+fn resolve_wiki_document_id(base: &str, wiki_token: &str, auth: &FeishuAuth) -> Result<String> {
+    let url = format!(
+        "{base}/wiki/v2/spaces/get_node?token={}",
+        urlencoding_lite(wiki_token)
+    );
+    let body = curl_json(&url, &auth.access_token)?;
+    let v: serde_json::Value = serde_json::from_str(&body).context("解析知识库节点")?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+        bail!("飞书 API: {msg} ({code})");
+    }
+    let node = v.pointer("/data/node").context("知识库节点响应缺少 data.node")?;
+    let obj_type = node.get("obj_type").and_then(|t| t.as_str()).unwrap_or("");
+    if obj_type != "docx" && obj_type != "doc" {
+        bail!("{}", fdl_core::feishu::DocUrlError::WikiNotDocx);
+    }
+    let obj_token = node
+        .get("obj_token")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim();
+    if obj_token.is_empty() {
+        bail!("知识库节点没有文档 token");
+    }
+    Ok(obj_token.to_string())
+}
+
 /// Fetch document meta + all blocks for a pasted link.
 pub fn fetch_document(url: &str, auth: &FeishuAuth) -> Result<(DocumentMeta, Vec<ApiBlock>)> {
-    let doc = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let mut doc = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if auth.access_token.is_empty() {
         bail!("尚未登录飞书，请先在设置里完成授权");
     }
     let base = api_base(&doc.host);
+    if let Some(wiki) = doc.wiki_token.clone() {
+        doc.document_id = resolve_wiki_document_id(base, &wiki, auth)?;
+        doc.wiki_token = None;
+    }
     let meta_url = format!("{base}/docx/v1/documents/{}", doc.document_id);
     let meta_body = curl_json(&meta_url, &auth.access_token)?;
     let meta_env: ApiEnvelope<DocumentData> = serde_json::from_str(&meta_body).context("解析文档元数据")?;

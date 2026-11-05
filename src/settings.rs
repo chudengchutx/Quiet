@@ -987,6 +987,8 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "导入失败，请重试" => "Import failed. Please try again.",
         "导入中…" => "Importing…",
         "飞书链接导入失败" => "Feishu link import failed",
+        "粘贴飞书文档或知识库链接" => "Paste a Feishu doc or wiki link",
+        "该知识库节点不是新版文档，暂不支持导入" => "That wiki node is not a docx document",
         "已从飞书链接导入" => "Imported from Feishu link",
         "粘贴飞书文档链接" => "Paste Feishu doc link",
         "粘贴飞书 /docx/ 文档链接" => "Paste a Feishu /docx/ document link",
