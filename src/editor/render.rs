@@ -1520,7 +1520,11 @@ impl Editor {
                     ed.start_thumbs(cx);
                     // A notify during the draw is dropped (even a deferred
                     // one); send it from a task, after the frame.
-                    if ed.update_active() {
+                    let top = ed.list.logical_scroll_top();
+                    let show_top = top.item_ix > 0 || top.offset_in_item > px(200.);
+                    let changed = ed.update_active() || show_top != ed.show_back_to_top;
+                    ed.show_back_to_top = show_top;
+                    if changed {
                         cx.spawn(async |this, cx| this.update(cx, |_, cx| cx.notify())).detach();
                     }
                     ed.apply_reveal(window);
@@ -1581,6 +1585,7 @@ impl Editor {
             .children(block_overlay)
             .children(image_layer)
             .children(counter)
+            .children(self.back_to_top_button(cx))
             .children(find_box)
             .children(lightbox)
             .children(toast)
@@ -1603,6 +1608,48 @@ impl Render for Editor {
 }
 
 impl Editor {
+
+    /// Floating 「回到顶部」 control (Feishu-style): bottom-right, only once
+    /// the page has scrolled past ~200px / the first list item.
+    fn back_to_top_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let top = self.list.logical_scroll_top();
+        if top.item_ix == 0 && top.offset_in_item <= px(200.) {
+            return None;
+        }
+        // Sit above the selection word-count chip when both are visible.
+        let above_counter = self.core.in_block_mode() || !self.core.sel.is_collapsed();
+        let bottom = if above_counter { px(52.) } else { px(24.) };
+        Some(
+            div()
+                .id("back-to-top")
+                .absolute()
+                .bottom(bottom)
+                .right(px(24.))
+                .size(px(36.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .bg(crate::theme::raised(Theme::bg_body()))
+                .border_1()
+                .border_color(Theme::button_border())
+                .shadow(theme::shadow_button())
+                .hover(|s| s.bg(Theme::fill_hover()))
+                .active(|s| s.bg(Theme::fill_pressed()))
+                .child(icon("arrow-up", 18., crate::theme::Theme::icon()))
+                .tip_above(crate::settings::tr("回到顶部", "Back to top"), None)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|ed, _, _, cx| {
+                    cx.stop_propagation();
+                    ed.list.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.) });
+                    ed.show_back_to_top = false;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// "N 字" chip at the bottom right while text is selected (§2).
     fn word_counter(&self) -> Option<AnyElement> {
         let n = if self.core.in_block_mode() {

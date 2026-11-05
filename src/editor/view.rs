@@ -197,6 +197,9 @@ pub struct Editor {
     pub(super) cat_jump: Option<BlockId>,
     pub(super) cat_scroll: UniformListScrollHandle,
     pub(super) scrollbar: Rc<super::scrollbar::Scrollbar>,
+    /// Whether the floating back-to-top control was shown last frame (for
+    /// paint→notify when scroll crosses the show/hide threshold).
+    pub(super) show_back_to_top: bool,
     /// Column-gap hover: (grid, gap index, over the 新增分栏 circle).
     pub(super) gap_hover: Option<(BlockId, usize, bool)>,
     pub(super) col_drag: Option<super::grid::ColDrag>,
@@ -413,6 +416,7 @@ impl Editor {
             cat_jump: None,
             cat_scroll: UniformListScrollHandle::new(),
             scrollbar: Rc::default(),
+            show_back_to_top: false,
             gap_hover: None,
             col_drag: None,
             block_drag: None,
