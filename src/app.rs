@@ -430,7 +430,7 @@ impl Workspace {
             export_md: None,
             import_link: None,
             import_link_field: Some(cx.new(|cx| {
-                let mut f = TextField::new(crate::settings::tr("粘贴飞书文档链接", "Paste Feishu doc link"), cx);
+                let f = TextField::new(crate::settings::tr("粘贴飞书文档链接", "Paste Feishu doc link"), cx);
                 f
             })),
             focus: cx.focus_handle(),

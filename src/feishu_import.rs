@@ -96,7 +96,7 @@ pub fn fetch_document(url: &str, auth: &FeishuAuth) -> Result<(DocumentMeta, Vec
     let mut items = Vec::new();
     let mut page_token = String::new();
     loop {
-        let mut list_url = format!
+        let mut list_url = format!(
             "{base}/docx/v1/documents/{}/blocks?page_size=500",
             doc.document_id
         );

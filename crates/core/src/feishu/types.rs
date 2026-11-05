@@ -248,7 +248,7 @@ pub struct ApiEnvelope<T> {
     pub code: i32,
     #[serde(default)]
     pub msg: String,
-    #[serde(default)]
+    /// Missing `data` becomes `None` without requiring `T: Default`.
     pub data: Option<T>,
 }
 
