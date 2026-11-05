@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub struct MapOptions {
     /// `file_token` → absolute path (or `assets/...`) for images and files.
     pub media: HashMap<String, String>,
+    /// Prefetched sheet values keyed by Feishu `block_id` (rows of display strings).
+    pub sheets: HashMap<String, Vec<Vec<String>>>,
 }
 
 /// Build a `Document` from the document meta and the flat blocks list.
@@ -87,6 +89,7 @@ fn map_block(b: &ApiBlock, by_id: &HashMap<&str, &ApiBlock>, opts: &MapOptions) 
             Vec::new()
         }
         27 => vec![image_block(b, opts)],
+        30 => vec![sheet_block(b, opts)],
         31 => vec![table_block(b, by_id, opts)],
         32 => Vec::new(), // cells folded into table
         34 => {
@@ -270,26 +273,113 @@ fn table_block(b: &ApiBlock, by_id: &HashMap<&str, &ApiBlock>, opts: &MapOptions
     )
 }
 
-fn raw_block(b: &ApiBlock) -> Block {
-    let xml = match &b.raw_json {
-        Some(s) => s.clone(),
-        None => {
-            let mut s = String::from("<feishu-block type=\"");
-            s.push_str(&b.block_type.to_string());
-            s.push_str("\" id=\"");
-            s.push_str(&escape_xml(&b.block_id));
-            s.push_str("\"/>");
-            s
+fn sheet_block(b: &ApiBlock, opts: &MapOptions) -> Block {
+    if let Some(rows) = opts.sheets.get(&b.block_id) {
+        if !rows.is_empty() {
+            return sheet_rows_to_table(rows);
         }
+    }
+    // Missing or empty fetch → readable placeholder, never raw JSON.
+    let tag = "feishu-sheet".to_string();
+    let token = b.sheet.as_ref().map(|s| s.token.as_str()).unwrap_or("");
+    let xml = if token.is_empty() {
+        format!("<{tag} type=\"30\">飞书电子表格（无内容）</{tag}>")
+    } else {
+        format!(
+            "<{tag} type=\"30\" token=\"{}\">飞书电子表格（未能加载内容）</{tag}>",
+            escape_xml(token)
+        )
     };
+    Block::new(BlockKind::Raw { tag, xml }, RichText::plain(""))
+}
+
+fn sheet_rows_to_table(rows: &[Vec<String>]) -> Block {
+    let cols_n = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut table_rows: Vec<Vec<TableCell>> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let mut row = Vec::with_capacity(cols_n);
+        for c in 0..cols_n {
+            let text = r.get(c).cloned().unwrap_or_default();
+            row.push(TableCell {
+                blocks: vec![Block::text(&text)],
+                bg: None,
+                valign: None,
+                colspan: 1,
+                rowspan: 1,
+            });
+        }
+        table_rows.push(row);
+    }
     Block::new(
-        BlockKind::Raw {
-            tag: format!("feishu-{}", b.block_type),
-            xml,
-        },
+        BlockKind::Table(Table {
+            col_widths: Vec::new(),
+            header_rows: 1,
+            header_col: false,
+            rows: table_rows,
+        }),
         RichText::plain(""),
     )
 }
+
+/// Friendly slug for unsupported Feishu block types (used in Raw tag / kind attr).
+fn unsupported_kind(block_type: i32) -> &'static str {
+    match block_type {
+        18 => "bitable",
+        20 => "chat_card",
+        26 => "iframe",
+        28 => "isv",
+        29 => "mindnote",
+        30 => "sheet",
+        33 => "view",
+        35 => "task",
+        43 => "board",
+        44 => "agenda",
+        48 => "link_preview",
+        _ => "unsupported",
+    }
+}
+
+fn unsupported_label(kind: &str) -> &'static str {
+    match kind {
+        "sheet" => "飞书电子表格",
+        "board" => "飞书画板",
+        "bitable" => "飞书多维表格",
+        "mindnote" => "飞书思维导图",
+        "chat_card" => "飞书会话卡片",
+        "iframe" => "飞书内嵌网页",
+        "view" => "飞书视图",
+        "task" => "飞书任务",
+        "agenda" => "飞书议程",
+        "link_preview" => "飞书链接预览",
+        "isv" => "飞书应用块",
+        _ => "飞书未支持块",
+    }
+}
+
+fn raw_block(b: &ApiBlock) -> Block {
+    // Never dump API JSON into document XML — always a well-formed element.
+    let kind = unsupported_kind(b.block_type);
+    let tag = if kind == "unsupported" {
+        "feishu-unsupported".to_string()
+    } else {
+        format!("feishu-{kind}")
+    };
+    let mut attrs = format!("type=\"{}\" kind=\"{}\"", b.block_type, kind);
+    if let Some(sheet) = &b.sheet {
+        if !sheet.token.is_empty() {
+            attrs.push_str(&format!(" token=\"{}\"", escape_xml(&sheet.token)));
+        }
+    }
+    if let Some(board) = &b.board {
+        if !board.token.is_empty() {
+            attrs.push_str(&format!(" token=\"{}\"", escape_xml(&board.token)));
+        }
+    }
+    let label = unsupported_label(kind);
+    let xml = format!("<{tag} {attrs}>{label}</{tag}>");
+    Block::new(BlockKind::Raw { tag, xml }, RichText::plain(""))
+}
+
 fn rich_from_elements(elements: &[TextElement]) -> RichText {
     let mut rt = RichText::plain("");
     for el in elements {
@@ -476,6 +566,8 @@ mod tests {
             grid: None,
             grid_column: None,
             quote_container: None,
+            sheet: None,
+            board: None,
             raw_json: None,
         };
         match ty {
@@ -518,12 +610,111 @@ mod tests {
         };
         let mut unknown = text_block("x", "p", "", 99);
         unknown.block_type = 99;
+        unknown.raw_json = Some(r#"{"block_id":"x","block_type":99}"#.into());
         let meta = DocumentMeta {
             document_id: "d".into(),
             revision_id: 0,
             title: "T".into(),
         };
         let doc = document_from_blocks(&meta, &[page, unknown], &MapOptions::default());
-        assert!(matches!(doc.blocks[0].kind, BlockKind::Raw { .. }));
+        let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {
+            panic!("expected Raw");
+        };
+        assert_eq!(tag, "feishu-unsupported");
+        assert!(xml.contains("feishu-unsupported"), "{xml}");
+        assert!(!xml.contains('{'), "must not dump JSON: {xml}");
+        assert!(xml.contains("飞书未支持块"), "{xml}");
+    }
+
+    #[test]
+    fn sheet_becomes_table() {
+        let page = {
+            let mut p = text_block("p", "", "T", 1);
+            p.children = vec!["s".into()];
+            p
+        };
+        let mut sheet = text_block("s", "p", "", 30);
+        sheet.block_type = 30;
+        sheet.sheet = Some(crate::feishu::types::SheetApiBlock {
+            token: "SSSS_sheet1".into(),
+        });
+        sheet.raw_json = Some(r#"{"block_id":"s","block_type":30,"sheet":{"token":"SSSS_sheet1"}}"#.into());
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 0,
+            title: "T".into(),
+        };
+        let mut opts = MapOptions::default();
+        opts.sheets.insert(
+            "s".into(),
+            vec![
+                vec!["指标".into(), "目标".into(), "实际".into()],
+                vec!["转化率".into(), "10%".into(), "12%".into()],
+            ],
+        );
+        let doc = document_from_blocks(&meta, &[page, sheet], &opts);
+        let BlockKind::Table(t) = &doc.blocks[0].kind else {
+            panic!("expected Table, got {:?}", doc.blocks[0].kind);
+        };
+        assert_eq!(t.header_rows, 1);
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0].len(), 3);
+        assert_eq!(t.rows[0][0].blocks[0].text.text, "指标");
+        assert_eq!(t.rows[1][2].blocks[0].text.text, "12%");
+    }
+
+    #[test]
+    fn sheet_without_data_is_placeholder_not_json() {
+        let page = {
+            let mut p = text_block("p", "", "T", 1);
+            p.children = vec!["s".into()];
+            p
+        };
+        let mut sheet = text_block("s", "p", "", 30);
+        sheet.block_type = 30;
+        sheet.sheet = Some(crate::feishu::types::SheetApiBlock {
+            token: "SSSS_sheet1".into(),
+        });
+        sheet.raw_json = Some(r#"{"block_type":30}"#.into());
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 0,
+            title: "T".into(),
+        };
+        let doc = document_from_blocks(&meta, &[page, sheet], &MapOptions::default());
+        let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {
+            panic!("expected Raw placeholder");
+        };
+        assert_eq!(tag, "feishu-sheet");
+        assert!(!xml.contains('{'), "{xml}");
+        assert!(xml.contains("飞书电子表格"), "{xml}");
+    }
+
+    #[test]
+    fn board_becomes_labeled_raw() {
+        let page = {
+            let mut p = text_block("p", "", "T", 1);
+            p.children = vec!["b".into()];
+            p
+        };
+        let mut board = text_block("b", "p", "", 43);
+        board.block_type = 43;
+        board.board = Some(crate::feishu::types::BoardApiBlock {
+            token: "BOARDTOK".into(),
+        });
+        board.raw_json = Some(r#"{"block_type":43,"board":{"token":"BOARDTOK"}}"#.into());
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 0,
+            title: "T".into(),
+        };
+        let doc = document_from_blocks(&meta, &[page, board], &MapOptions::default());
+        let BlockKind::Raw { tag, xml } = &doc.blocks[0].kind else {
+            panic!("expected Raw");
+        };
+        assert_eq!(tag, "feishu-board");
+        assert!(!xml.contains('{'), "{xml}");
+        assert!(xml.contains("飞书画板"), "{xml}");
+        assert!(xml.contains("BOARDTOK"), "{xml}");
     }
 }

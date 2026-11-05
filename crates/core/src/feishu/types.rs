@@ -73,9 +73,27 @@ pub struct ApiBlock {
     pub grid_column: Option<GridColumnBlock>,
     #[serde(default)]
     pub quote_container: Option<Value>,
-    /// Full JSON of this block (set by the importer for Round-trip Raw).
+    /// Embedded spreadsheet (`block_type` 30). Token is `spreadsheetToken_sheetId`.
+    #[serde(default)]
+    pub sheet: Option<SheetApiBlock>,
+    /// Whiteboard / board (`block_type` 43); kept for labeling only.
+    #[serde(default)]
+    pub board: Option<BoardApiBlock>,
+    /// Full JSON of this block (set by the importer; unused for document XML).
     #[serde(skip)]
     pub raw_json: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+pub struct SheetApiBlock {
+    #[serde(default)]
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+pub struct BoardApiBlock {
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]

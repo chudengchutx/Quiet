@@ -4,20 +4,21 @@
 
 ## 能力
 
-- 解析 `*.feishu.cn` / `*.larksuite.com` 的 docx 链接
+- 解析 `*.feishu.cn` / `*.larksuite.com` 的 `/docx/` 与 `/wiki/` 链接
 - 用 Open API 拉文档 meta + 全部分块，映射进 quiet.md 的 `Document`
 - 图片 / 文件按 `file_token` 下载到库的 `assets/`
-- 未建模的块类型写成 `BlockKind::Raw`（保留原始 JSON），不丢内容
+- 内嵌电子表格（`block_type` 30）通过 Sheets API 展开为本地 `table`
+- 未建模的块类型写成带可读标签的 `BlockKind::Raw` 占位（如画板 / 多维表），**不会**把 API JSON 写入文档 XML
 
 ## 暂不支持
 
-- 知识库 `/wiki/` 链接（请打开文档后复制 `/docx/` 链接）
-- 双向同步、评论、权限、电子表格 / 多维表格整表
+- 知识库节点若不是 docx（表格 / 多维表等）
+- 双向同步、评论、权限；画板 / 多维表格等仍为占位（非整表导入）
 
 ## 配置
 
 1. 在[飞书开放平台](https://open.feishu.cn/)创建企业自建应用
-2. 开通权限（至少）：`docx:document:readonly`、`drive:drive:readonly`（媒体下载）、按需 `offline_access`
+2. 开通权限（至少）：`docx:document:readonly`、`drive:drive:readonly`（媒体下载）、`sheets:spreadsheet:readonly`（内嵌表格）、按需 `wiki:wiki:readonly` / `offline_access`
 3. 在应用里配置桌面端重定向（P0 也可用 `tenant_access_token` 导入应用有权访问的文档）
 4. 在 quiet.md 设置中填写 App ID / App Secret，并完成登录（凭证写在文档库旁的 `feishu-auth.json`，勿提交到 git）
 

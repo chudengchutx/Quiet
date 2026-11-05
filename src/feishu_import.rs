@@ -218,6 +218,130 @@ fn safe_name(token: &str) -> String {
     s
 }
 
+/// Split sheet block token `spreadsheetToken_sheetId` on the **last** `_`.
+fn split_sheet_token(token: &str) -> Option<(&str, &str)> {
+    let idx = token.rfind('_')?;
+    let spreadsheet = &token[..idx];
+    let sheet_id = &token[idx + 1..];
+    if spreadsheet.is_empty() || sheet_id.is_empty() {
+        return None;
+    }
+    Some((spreadsheet, sheet_id))
+}
+
+/// Convert a Sheets API cell value into a display string.
+fn cell_to_string(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(b) => {
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(cell_to_string)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(""),
+        serde_json::Value::Object(map) => {
+            for key in ["text", "content", "name", "title", "link"] {
+                if let Some(inner) = map.get(key) {
+                    let s = cell_to_string(inner);
+                    if !s.is_empty() {
+                        return s;
+                    }
+                }
+            }
+            // Mention / rich cells: flatten string leaves.
+            let mut parts = Vec::new();
+            collect_string_leaves(v, &mut parts);
+            parts.join("")
+        }
+    }
+}
+
+fn collect_string_leaves(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => out.push(s.clone()),
+        serde_json::Value::Array(arr) => {
+            for x in arr {
+                collect_string_leaves(x, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for x in map.values() {
+                collect_string_leaves(x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_sheet_values(body: &str) -> Result<Vec<Vec<String>>> {
+    let v: serde_json::Value = serde_json::from_str(body).context("解析电子表格响应")?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code != 0 {
+        let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown");
+        bail!("飞书 Sheets API: {msg} ({code})");
+    }
+    let values = v
+        .pointer("/data/valueRange/values")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut rows = Vec::with_capacity(values.len());
+    for row in values {
+        let cells = match row {
+            serde_json::Value::Array(arr) => arr.iter().map(cell_to_string).collect(),
+            other => vec![cell_to_string(&other)],
+        };
+        rows.push(cells);
+    }
+    Ok(rows)
+}
+
+/// Fetch used-range values for every embedded sheet block. Failures are logged and skipped.
+fn fetch_sheet_values(
+    blocks: &[ApiBlock],
+    auth: &FeishuAuth,
+    host: &str,
+) -> HashMap<String, Vec<Vec<String>>> {
+    let base = api_base(host);
+    let mut out = HashMap::new();
+    for b in blocks {
+        if b.block_type != 30 {
+            continue;
+        }
+        let Some(sheet) = &b.sheet else { continue };
+        if sheet.token.is_empty() {
+            continue;
+        }
+        let Some((spreadsheet_token, sheet_id)) = split_sheet_token(&sheet.token) else {
+            eprintln!("feishu sheet {}: malformed token (no last `_`)", b.block_id);
+            continue;
+        };
+        let url = format!(
+            "{base}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{}?valueRenderOption=FormattedValue&dateTimeRenderOption=FormattedString",
+            urlencoding_lite(sheet_id)
+        );
+        match curl_json(&url, &auth.access_token) {
+            Ok(body) => match parse_sheet_values(&body) {
+                Ok(rows) => {
+                    out.insert(b.block_id.clone(), rows);
+                }
+                Err(e) => eprintln!("feishu sheet {}: {e:#}", b.block_id),
+            },
+            Err(e) => eprintln!("feishu sheet {}: {e:#}", b.block_id),
+        }
+    }
+    out
+}
+
 /// End-to-end: URL → Document (media downloaded under `assets_dir`).
 pub fn import_from_url(url: &str, auth: &FeishuAuth, assets_dir: &Path) -> Result<Document> {
     let doc_ref = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -232,7 +356,8 @@ pub fn import_from_url(url: &str, auth: &FeishuAuth, assets_dir: &Path) -> Resul
     }
     let (meta, blocks) = fetch_document(url, &auth)?;
     let media = download_media(&blocks, &auth, &doc_ref.host, assets_dir)?;
-    let opts = MapOptions { media };
+    let sheets = fetch_sheet_values(&blocks, &auth, &doc_ref.host);
+    let opts = MapOptions { media, sheets };
     Ok(document_from_blocks(&meta, &blocks, &opts))
 }
 
