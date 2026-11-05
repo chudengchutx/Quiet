@@ -255,6 +255,7 @@ fn table_block(b: &ApiBlock, by_id: &HashMap<&str, &ApiBlock>, opts: &MapOptions
     let rows_n = prop.map(|p| p.row_size.max(0) as usize).unwrap_or(0);
     let cols_n = prop.map(|p| p.column_size.max(0) as usize).unwrap_or(0);
     let cells = b.table.as_ref().map(|t| t.cells.as_slice()).unwrap_or(&[]);
+    let merge_info = prop.map(|p| p.merge_info.as_slice()).unwrap_or(&[]);
     let mut rows: Vec<Vec<TableCell>> = Vec::new();
     if rows_n > 0 && cols_n > 0 {
         for r in 0..rows_n {
@@ -283,15 +284,63 @@ fn table_block(b: &ApiBlock, by_id: &HashMap<&str, &ApiBlock>, opts: &MapOptions
             }
             rows.push(row);
         }
+        apply_table_merge_info(&mut rows, merge_info);
     }
     let col_widths = prop
         .map(|p| p.column_width.iter().map(|w| *w as f32).collect())
         .unwrap_or_default();
     let header_rows = if prop.map(|p| p.header_row).unwrap_or(false) { 1 } else { 0 };
-    Block::new(
-        BlockKind::Table(Table { col_widths, header_rows, header_col: false, rows }),
-        RichText::plain(""),
-    )
+    let mut table = Table { col_widths, header_rows, header_col: false, rows };
+    table.repair();
+    Block::new(BlockKind::Table(table), RichText::plain(""))
+}
+
+/// Map Feishu `table.property.merge_info` (row-major, parallel to `cells`) onto
+/// quiet.md [`TableCell`] spans. Anchors keep content; covered slots become
+/// [`TableCell::covered`]. API quirk: covered (or buggy) entries may report
+/// `row_span`/`col_span` as 0 — treat those as 1 when the slot is still free.
+fn apply_table_merge_info(rows: &mut [Vec<TableCell>], merge_info: &[crate::feishu::types::TableMergeInfo]) {
+    let rows_n = rows.len();
+    if rows_n == 0 {
+        return;
+    }
+    let cols_n = rows[0].len();
+    if cols_n == 0 {
+        return;
+    }
+    let mut owned = vec![vec![false; cols_n]; rows_n];
+    for r in 0..rows_n {
+        for c in 0..cols_n {
+            if owned[r][c] {
+                rows[r][c] = TableCell::covered();
+                continue;
+            }
+            let idx = r * cols_n + c;
+            let (mut rs, mut cs) = match merge_info.get(idx) {
+                Some(m) => (m.row_span.max(0) as usize, m.col_span.max(0) as usize),
+                None => (1, 1),
+            };
+            // Feishu occasionally returns {0,0} for covered/buggy slots.
+            if rs == 0 {
+                rs = 1;
+            }
+            if cs == 0 {
+                cs = 1;
+            }
+            rs = rs.min(rows_n - r);
+            cs = cs.min(cols_n - c);
+            rows[r][c].rowspan = rs as u32;
+            rows[r][c].colspan = cs as u32;
+            for rr in r..r + rs {
+                for cc in c..c + cs {
+                    owned[rr][cc] = true;
+                    if rr != r || cc != c {
+                        rows[rr][cc] = TableCell::covered();
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn sheet_block(b: &ApiBlock, opts: &MapOptions) -> Block {
@@ -876,6 +925,118 @@ mod tests {
         assert_eq!(t.rows[0].len(), 3);
         assert_eq!(t.rows[0][0].blocks[0].text.text, "指标");
         assert_eq!(t.rows[1][2].blocks[0].text.text, "12%");
+    }
+
+    /// Build a Feishu table (block_type 31) with cell text blocks and optional merge_info.
+    fn feishu_table_fixture(
+        cell_texts: &[&str],
+        rows_n: i32,
+        cols_n: i32,
+        merge_info: Vec<crate::feishu::types::TableMergeInfo>,
+    ) -> (DocumentMeta, Vec<ApiBlock>) {
+        let mut page = text_block("p", "", "T", 1);
+        page.children = vec!["tbl".into()];
+
+        let mut cell_ids = Vec::new();
+        let mut blocks = vec![page];
+        for (i, txt) in cell_texts.iter().enumerate() {
+            let cid = format!("c{i}");
+            let tid = format!("t{i}");
+            let mut cell = text_block(&cid, "tbl", "", 32);
+            cell.block_type = 32;
+            cell.children = vec![tid.clone()];
+            let text = text_block(&tid, &cid, txt, 2);
+            cell_ids.push(cid);
+            blocks.push(cell);
+            blocks.push(text);
+        }
+
+        let mut table = text_block("tbl", "p", "", 31);
+        table.block_type = 31;
+        table.children = cell_ids.clone();
+        table.table = Some(crate::feishu::types::TableBlock {
+            property: Some(crate::feishu::types::TableProperty {
+                row_size: rows_n,
+                column_size: cols_n,
+                column_width: vec![100; cols_n as usize],
+                header_row: false,
+                merge_info,
+            }),
+            cells: cell_ids,
+        });
+        blocks.insert(1, table);
+
+        let meta = DocumentMeta {
+            document_id: "d".into(),
+            revision_id: 0,
+            title: "T".into(),
+            ..Default::default()
+        };
+        (meta, blocks)
+    }
+
+    #[test]
+    fn table_merge_info_maps_colspan_rowspan() {
+        // 2x2 table: top-left spans both rows and cols; others covered (0,0 quirk).
+        let merge_info = vec![
+            crate::feishu::types::TableMergeInfo { row_span: 2, col_span: 2 },
+            crate::feishu::types::TableMergeInfo { row_span: 0, col_span: 0 },
+            crate::feishu::types::TableMergeInfo { row_span: 0, col_span: 0 },
+            crate::feishu::types::TableMergeInfo { row_span: 0, col_span: 0 },
+        ];
+        let (meta, blocks) = feishu_table_fixture(&["A", "b", "c", "d"], 2, 2, merge_info);
+        let doc = document_from_blocks(&meta, &blocks, &MapOptions::default());
+        let BlockKind::Table(t) = &doc.blocks[0].kind else {
+            panic!("expected Table, got {:?}", doc.blocks[0].kind);
+        };
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[0].len(), 2);
+        assert_eq!((t.rows[0][0].rowspan, t.rows[0][0].colspan), (2, 2));
+        assert_eq!(t.rows[0][0].blocks[0].text.text, "A");
+        assert!(t.rows[0][1].is_covered());
+        assert!(t.rows[1][0].is_covered());
+        assert!(t.rows[1][1].is_covered());
+    }
+
+    #[test]
+    fn table_partial_row_merge_and_unmerged() {
+        // 2x3: first row merges col0-1; rest are 1x1. Covered slot may still say 1,1.
+        let merge_info = vec![
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 2 },
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 1 },
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 1 },
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 1 },
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 1 },
+            crate::feishu::types::TableMergeInfo { row_span: 1, col_span: 1 },
+        ];
+        let (meta, blocks) =
+            feishu_table_fixture(&["AB", "x", "C", "D", "E", "F"], 2, 3, merge_info);
+        let doc = document_from_blocks(&meta, &blocks, &MapOptions::default());
+        let BlockKind::Table(t) = &doc.blocks[0].kind else {
+            panic!("expected Table");
+        };
+        assert_eq!((t.rows[0][0].rowspan, t.rows[0][0].colspan), (1, 2));
+        assert_eq!(t.rows[0][0].blocks[0].text.text, "AB");
+        assert!(t.rows[0][1].is_covered());
+        assert_eq!((t.rows[0][2].rowspan, t.rows[0][2].colspan), (1, 1));
+        assert_eq!(t.rows[0][2].blocks[0].text.text, "C");
+        assert_eq!(t.rows[1][0].blocks[0].text.text, "D");
+        assert!(!t.rows[1][0].is_covered());
+    }
+
+    #[test]
+    fn table_without_merge_info_stays_1x1() {
+        let (meta, blocks) = feishu_table_fixture(&["a", "b", "c", "d"], 2, 2, vec![]);
+        let doc = document_from_blocks(&meta, &blocks, &MapOptions::default());
+        let BlockKind::Table(t) = &doc.blocks[0].kind else {
+            panic!("expected Table");
+        };
+        for row in &t.rows {
+            for cell in row {
+                assert!(!cell.is_covered());
+                assert_eq!((cell.rowspan, cell.colspan), (1, 1));
+            }
+        }
     }
 
     #[test]

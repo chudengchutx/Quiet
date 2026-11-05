@@ -270,6 +270,19 @@ pub struct TableProperty {
     pub column_width: Vec<i32>,
     #[serde(default)]
     pub header_row: bool,
+    /// Parallel to `TableBlock.cells` (row-major). Read-only from Feishu;
+    /// anchors carry `row_span`/`col_span` ≥ 1; covered slots may be 0/0.
+    #[serde(default)]
+    pub merge_info: Vec<TableMergeInfo>,
+}
+
+/// One `table.property.merge_info[]` entry: spans from this cell's (row, col).
+#[derive(Clone, Debug, Deserialize, Default)]
+pub struct TableMergeInfo {
+    #[serde(default)]
+    pub row_span: i32,
+    #[serde(default)]
+    pub col_span: i32,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
