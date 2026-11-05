@@ -12,6 +12,7 @@ use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button
 use crate::ui::ToastKind;
 use gpui::{prelude::FluentBuilder, *};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The open 导出 Markdown 设置 dialog: the page, and 所有内容 picked.
 pub struct ExportMd {
@@ -24,6 +25,8 @@ pub struct ImportLink {
     pub url: String,
     pub busy: bool,
     pub error: Option<String>,
+    /// Live stage line while `busy` (Chinese source; localized on render).
+    pub status: String,
 }
 
 const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
@@ -410,7 +413,12 @@ impl Workspace {
             })
             .unwrap_or_default();
         let url = if fdl_core::feishu::parse_doc_url(&clip).is_ok() { clip } else { String::new() };
-        self.import_link = Some(crate::transfer::ImportLink { url, busy: false, error: None });
+        self.import_link = Some(crate::transfer::ImportLink {
+            url,
+            busy: false,
+            error: None,
+            status: String::new(),
+        });
         if let Some(f) = self.import_link_field.as_ref() {
             f.update(cx, |f, cx| {
                 f.set_text(self.import_link.as_ref().map(|i| i.url.as_str()).unwrap_or(""), cx);
@@ -436,15 +444,56 @@ impl Workspace {
         }
         state.busy = true;
         state.error = None;
+        state.status = crate::settings::text("准备导入…").to_string();
         cx.notify();
+        self.show_toast_kind(ToastKind::Info, crate::settings::text("正在导入飞书文档"), cx);
         let root = fdl_core::store::Store::root_dir();
         let assets = fdl_core::store::Store::assets_dir();
         let auth = crate::feishu_import::load_auth(&root);
-        // Network via curl: run off the UI thread.
+        // Progress + completion over one channel; curl work stays off the UI thread.
+        enum ImportEvent {
+            Progress(String),
+            Done(Result<Document, String>),
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<ImportEvent>();
+        let tx_progress = tx.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let progress = move |msg: &str| {
+                    let _ = tx_progress.send(ImportEvent::Progress(msg.to_string()));
+                };
+                let result = crate::feishu_import::import_from_url(
+                    &url,
+                    &auth,
+                    &assets,
+                    Some(&progress),
+                );
+                let _ = tx.send(ImportEvent::Done(result.map_err(|e| format!("{e:#}"))));
+            })
+            .detach();
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move {
-                crate::feishu_import::import_from_url(&url, &auth, &assets)
-            }).await;
+            let result = loop {
+                let mut done = None;
+                while let Ok(ev) = rx.try_recv() {
+                    match ev {
+                        ImportEvent::Progress(msg) => {
+                            let _ = this.update(cx, |w, cx| {
+                                if let Some(s) = w.import_link.as_mut() {
+                                    s.status = msg.clone();
+                                }
+                                cx.notify();
+                            });
+                        }
+                        ImportEvent::Done(r) => done = Some(r),
+                    }
+                }
+                if let Some(r) = done {
+                    break r;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
             let _ = this.update_in(cx, |w, window, cx| {
                 match result {
                     Ok(doc) => {
@@ -454,28 +503,53 @@ impl Workspace {
                                 w.entries = w.store.list();
                                 w.sort();
                                 w.open(&id, window, cx);
-                                w.show_toast_kind(ToastKind::Info, crate::settings::text("已从飞书链接导入"), cx);
+                                w.show_toast_kind(
+                                    ToastKind::Info,
+                                    crate::settings::text("已从飞书链接导入"),
+                                    cx,
+                                );
                             }
-                            Err(_) => w.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请重试"), cx),
+                            Err(_) => w.show_toast_kind(
+                                ToastKind::Error,
+                                crate::settings::text("导入失败，请重试"),
+                                cx,
+                            ),
                         }
                     }
                     Err(e) => {
                         if let Some(s) = w.import_link.as_mut() {
                             s.busy = false;
-                            s.error = Some(format!("{e:#}"));
+                            s.status.clear();
+                            s.error = Some(e);
                         }
-                        w.show_toast_kind(ToastKind::Error, crate::settings::text("飞书链接导入失败"), cx);
+                        w.show_toast_kind(
+                            ToastKind::Error,
+                            crate::settings::text("飞书链接导入失败"),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     pub(crate) fn render_import_link(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.import_link.as_ref()?;
         let busy = state.busy;
         let err = state.error.clone();
+        let status = if busy {
+            let s = state.status.trim();
+            if s.is_empty() {
+                crate::settings::text("导入中，请稍候…").to_string()
+            } else {
+                // Static stage keys localize here; dynamic sheet/media lines are already localized.
+                crate::settings::text(s).to_string()
+            }
+        } else {
+            String::new()
+        };
         let field = self.import_link_field.clone()?;
         let dialog = dialog("import-feishu")
             .relative()
@@ -500,6 +574,15 @@ impl Workspace {
                             .flex().items_center()
                             .child(field.clone())
                     )
+                    .when(busy && !status.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(12.))
+                                .text_color(Theme::text_caption())
+                                .child(status),
+                        )
+                    })
                     .when_some(err, |d, e| d.child(div().mt(px(8.)).text_size(px(12.)).text_color(Theme::text_caption()).child(e)))
             )
             .child(

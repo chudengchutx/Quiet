@@ -11,6 +11,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 const FEISHU_API: &str = "https://open.feishu.cn/open-apis";
 const LARK_API: &str = "https://open.larksuite.com/open-apis";
@@ -34,6 +36,17 @@ pub struct FeishuAuth {
 fn api_base(host: &str) -> &'static str {
     if host.contains("larksuite.com") { LARK_API } else { FEISHU_API }
 }
+
+
+/// Optional progress callback for the import dialog (Chinese stage lines).
+pub type ProgressFn = dyn Fn(&str) + Send + Sync;
+
+fn report(on_progress: Option<&ProgressFn>, msg: &str) {
+    if let Some(cb) = on_progress {
+        cb(msg);
+    }
+}
+
 
 fn curl_json(url: &str, token: &str) -> Result<String> {
     let out = Command::new("curl")
@@ -101,16 +114,22 @@ fn resolve_wiki_document_id(base: &str, wiki_token: &str, auth: &FeishuAuth) -> 
 }
 
 /// Fetch document meta + all blocks for a pasted link.
-pub fn fetch_document(url: &str, auth: &FeishuAuth) -> Result<(DocumentMeta, Vec<ApiBlock>)> {
+pub fn fetch_document(
+    url: &str,
+    auth: &FeishuAuth,
+    on_progress: Option<&ProgressFn>,
+) -> Result<(DocumentMeta, Vec<ApiBlock>)> {
     let mut doc = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if auth.access_token.is_empty() {
         bail!("尚未登录飞书，请先在设置里完成授权");
     }
     let base = api_base(&doc.host);
     if let Some(wiki) = doc.wiki_token.clone() {
+        report(on_progress, "正在解析知识库链接…");
         doc.document_id = resolve_wiki_document_id(base, &wiki, auth)?;
         doc.wiki_token = None;
     }
+    report(on_progress, "正在拉取文档内容…");
     let meta_url = format!("{base}/docx/v1/documents/{}", doc.document_id);
     let meta_body = curl_json(&meta_url, &auth.access_token)?;
     let meta_env: ApiEnvelope<DocumentData> = serde_json::from_str(&meta_body).context("解析文档元数据")?;
@@ -306,13 +325,15 @@ fn parse_sheet_values(body: &str) -> Result<Vec<Vec<String>>> {
 }
 
 /// Fetch used-range values for every embedded sheet block. Failures are logged and skipped.
+/// Sheet requests run with bounded concurrency (std threads, no extra deps).
 fn fetch_sheet_values(
     blocks: &[ApiBlock],
     auth: &FeishuAuth,
     host: &str,
+    on_progress: Option<&ProgressFn>,
 ) -> HashMap<String, Vec<Vec<String>>> {
     let base = api_base(host);
-    let mut out = HashMap::new();
+    let mut jobs: Vec<(String, String)> = Vec::new();
     for b in blocks {
         if b.block_type != 30 {
             continue;
@@ -329,34 +350,118 @@ fn fetch_sheet_values(
             "{base}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{}?valueRenderOption=FormattedValue&dateTimeRenderOption=FormattedString",
             urlencoding_lite(sheet_id)
         );
-        match curl_json(&url, &auth.access_token) {
-            Ok(body) => match parse_sheet_values(&body) {
-                Ok(rows) => {
-                    out.insert(b.block_id.clone(), rows);
-                }
-                Err(e) => eprintln!("feishu sheet {}: {e:#}", b.block_id),
-            },
-            Err(e) => eprintln!("feishu sheet {}: {e:#}", b.block_id),
-        }
+        jobs.push((b.block_id.clone(), url));
     }
-    out
+    let n = jobs.len();
+    if n == 0 {
+        return HashMap::new();
+    }
+    report(
+        on_progress,
+        &crate::localized_format!("正在拉取表格 0/{}…", "Fetching sheet 0/{}…", n),
+    );
+
+    const WORKERS: usize = 5;
+    let token = auth.access_token.clone();
+    let queue: Mutex<std::vec::IntoIter<(String, String)>> = Mutex::new(jobs.into_iter());
+    let out: Mutex<HashMap<String, Vec<Vec<String>>>> = Mutex::new(HashMap::new());
+    let done = AtomicUsize::new(0);
+    let workers = WORKERS.min(n).max(1);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let queue = &queue;
+            let out = &out;
+            let done = &done;
+            let token = &token;
+            let on_progress = &on_progress;
+            scope.spawn(move || {
+                loop {
+                    let next = {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.next()
+                    };
+                    let Some((block_id, url)) = next else { break };
+                    match curl_json(&url, token) {
+                        Ok(body) => match parse_sheet_values(&body) {
+                            Ok(rows) => {
+                                out.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(block_id.clone(), rows);
+                            }
+                            Err(e) => eprintln!("feishu sheet {block_id}: {e:#}"),
+                        },
+                        Err(e) => eprintln!("feishu sheet {block_id}: {e:#}"),
+                    }
+                    let i = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    report(
+                        *on_progress,
+                        &crate::localized_format!(
+                            "正在拉取表格 {}/{}…",
+                            "Fetching sheet {}/{}…",
+                            i,
+                            n
+                        ),
+                    );
+                }
+            });
+        }
+    });
+
+    out.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
 /// End-to-end: URL → Document (media downloaded under `assets_dir`).
-pub fn import_from_url(url: &str, auth: &FeishuAuth, assets_dir: &Path) -> Result<Document> {
+/// `on_progress` receives short Chinese stage lines for the import dialog.
+pub fn import_from_url(
+    url: &str,
+    auth: &FeishuAuth,
+    assets_dir: &Path,
+    on_progress: Option<&ProgressFn>,
+) -> Result<Document> {
     let doc_ref = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let mut auth = auth.clone();
     if auth.access_token.is_empty() {
         if auth.app_id.is_empty() || auth.app_secret.is_empty() {
             bail!("尚未配置飞书应用或登录，请先在文档库的 feishu-auth.json 填写 app_id / app_secret");
         }
+        report(on_progress, "正在获取访问令牌…");
         let (token, expire) = fetch_tenant_token(&auth.app_id, &auth.app_secret, &doc_ref.host)?;
         auth.access_token = token;
         auth.expires_at = expire;
     }
-    let (meta, blocks) = fetch_document(url, &auth)?;
+    let (meta, blocks) = fetch_document(url, &auth, on_progress)?;
+    let media_n = {
+        let mut tokens = Vec::new();
+        for b in &blocks {
+            if let Some(img) = &b.image {
+                if !img.token.is_empty() {
+                    tokens.push(img.token.as_str());
+                }
+            }
+            if let Some(f) = &b.file {
+                if !f.token.is_empty() {
+                    tokens.push(f.token.as_str());
+                }
+            }
+        }
+        tokens.sort();
+        tokens.dedup();
+        tokens.len()
+    };
+    if media_n > 0 {
+        report(
+            on_progress,
+            &crate::localized_format!(
+                "正在下载图片与附件（{}）…",
+                "Downloading images and attachments ({})…",
+                media_n
+            ),
+        );
+    }
     let media = download_media(&blocks, &auth, &doc_ref.host, assets_dir)?;
-    let sheets = fetch_sheet_values(&blocks, &auth, &doc_ref.host);
+    let sheets = fetch_sheet_values(&blocks, &auth, &doc_ref.host, on_progress);
+    report(on_progress, "正在整理文档…");
     let opts = MapOptions { media, sheets };
     Ok(document_from_blocks(&meta, &blocks, &opts))
 }
