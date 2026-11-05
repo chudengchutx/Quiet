@@ -667,14 +667,17 @@ impl Editor {
             return match key {
                 ListKey::Up | ListKey::Down => self.mention_key(Some(matches!(key, ListKey::Up)), false, false, window, cx),
                 ListKey::Enter => self.mention_key(None, true, false, window, cx),
-                ListKey::Close => false,
+                ListKey::Left | ListKey::Right | ListKey::Close => false,
                 ListKey::CloseAndPass => {
                     self.mention = None;
                     false
                 }
             };
         }
-        let add = matches!(self.menu, Some(Menu::Add { .. }));
+        let add = matches!(
+            self.menu,
+            Some(Menu::Add { .. }) | Some(Menu::Block { sub: Some(BlockSub::Add(_)), .. })
+        );
         if self.slash.is_none() && !add {
             return false;
         }
@@ -684,12 +687,15 @@ impl Editor {
         let cur = match (&self.slash, &self.menu) {
             (Some(s), _) => s.selected,
             (None, Some(Menu::Add { selected, .. })) => *selected,
+            (None, Some(Menu::Block { sub: Some(BlockSub::Add(selected)), .. })) => *selected,
             _ => 0,
         };
         let set = |e: &mut Editor, v: usize| {
             if let Some(s) = &mut e.slash {
                 s.selected = v;
             } else if let Some(Menu::Add { selected, .. }) = &mut e.menu {
+                *selected = v;
+            } else if let Some(Menu::Block { sub: Some(BlockSub::Add(selected)), .. }) = &mut e.menu {
                 *selected = v;
             }
             // Children of the scrolled list are group titles and items interleaved;
@@ -714,15 +720,46 @@ impl Editor {
             }
             e.slash_scroll.scroll_to_item(child);
         };
+        // Basic group is a 6-column icon grid; move in 2D there, and keep
+        // Left/Right from dismissing the panel the way ↑/↓ already navigate.
+        const GRID_COLS: usize = 6;
+        let grid_n = if grid {
+            results.iter().take_while(|i| menus::SLASH_ITEMS[**i].group == 0).count()
+        } else {
+            0
+        };
         match key {
             ListKey::Up => {
-                if n > 0 {
+                if n == 0 {
+                } else if grid && cur < grid_n {
+                    set(self, if cur >= GRID_COLS { cur - GRID_COLS } else { cur });
+                } else {
                     set(self, if cur >= n { n - 1 } else { (cur + n - 1) % n });
                 }
             }
             ListKey::Down => {
-                if n > 0 {
+                if n == 0 {
+                } else if grid && cur < grid_n {
+                    let next = cur + GRID_COLS;
+                    set(self, if next < grid_n { next } else if grid_n < n { grid_n } else { cur });
+                } else {
                     set(self, if cur >= n { 0 } else { (cur + 1) % n });
+                }
+            }
+            ListKey::Left if grid && cur < grid_n => {
+                if cur % GRID_COLS != 0 {
+                    set(self, cur - 1);
+                }
+            }
+            ListKey::Right if grid && cur < grid_n => {
+                if cur + 1 < grid_n && (cur % GRID_COLS) + 1 < GRID_COLS {
+                    set(self, cur + 1);
+                }
+            }
+            ListKey::Left | ListKey::Right => {
+                self.slash = None;
+                if add {
+                    self.menu = None;
                 }
             }
             ListKey::Enter => match results.get(cur) {
@@ -1288,7 +1325,7 @@ impl Editor {
     // ---- action handlers
 
     fn on_move_left(&mut self, _: &k::MoveLeft, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.guard(window, cx) || self.list_menu_key(ListKey::Close, window, cx) {
+        if !self.guard(window, cx) || self.list_menu_key(ListKey::Left, window, cx) {
             return;
         }
         if self.core.in_block_mode() {
@@ -1301,7 +1338,7 @@ impl Editor {
     }
 
     fn on_move_right(&mut self, _: &k::MoveRight, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.guard(window, cx) || self.list_menu_key(ListKey::Close, window, cx) {
+        if !self.guard(window, cx) || self.list_menu_key(ListKey::Right, window, cx) {
             return;
         }
         if self.core.in_block_mode() {
@@ -1833,9 +1870,9 @@ impl Editor {
             self.core.paste_blocks(d.blocks);
         } else if let Some(b) = html.filter(|b| !b.is_empty() && !restates(b) && !(image.is_some() && b.iter().all(|b| matches!(b.kind, BlockKind::Image { .. })))) {
             self.core.paste_blocks(b);
-        } else if let Some(s) = text.filter(|s| !s.is_empty()) {
-            self.core.paste_markdown(&s);
         } else if let Some(img) = image {
+            // Prefer a real clipboard image over a path string Windows often
+            // ships alongside Win+Shift+S / Explorer copies.
             let ext = match img.format {
                 ImageFormat::Jpeg => "jpg",
                 ImageFormat::Gif => "gif",
@@ -1847,6 +1884,16 @@ impl Editor {
             };
             let bytes = img.bytes.clone();
             self.insert_image_bytes(&bytes, ext, window, cx);
+        } else if let Some(path) = text.as_ref().and_then(|s| clipboard_image_path(s)) {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
+                    self.insert_image_bytes(&bytes, ext, window, cx);
+                }
+                Err(_) => self.toast(crate::settings::text("无法读取剪贴板中的图片"), cx),
+            }
+        } else if let Some(s) = text.filter(|s| !s.is_empty()) {
+            self.core.paste_markdown(&s);
         }
         if let Some(msg) = self.core.notice.take() {
             self.toast(msg, cx);
@@ -2454,10 +2501,25 @@ impl Editor {
     }
 }
 
+/// A lone clipboard string that is an existing image file path (Windows
+/// screenshot / Explorer "copy" often paste the path instead of pixels).
+fn clipboard_image_path(text: &str) -> Option<std::path::PathBuf> {
+    let t = text.trim().trim_matches('"');
+    if t.is_empty() || t.chars().any(|c| c == '\n' || c == '\r' || c == '\u{0}') {
+        return None;
+    }
+    let p = std::path::Path::new(t);
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    const EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic"];
+    (EXTS.contains(&ext.as_str()) && p.is_file()).then(|| p.to_path_buf())
+}
+
 #[derive(Clone, Copy)]
 enum ListKey {
     Up,
     Down,
+    Left,
+    Right,
     Enter,
     Close,
     CloseAndPass,

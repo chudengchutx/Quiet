@@ -29,6 +29,7 @@ mod themes;
 mod shortcuts;
 #[allow(dead_code, unused_imports)]
 mod feishu_theme;
+mod feishu_import;
 #[allow(dead_code, unused_imports)]
 mod editor_theme;
 #[allow(dead_code, unused_imports)]

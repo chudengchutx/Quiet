@@ -20,6 +20,7 @@ impl SharedStore {
     pub fn list_trash(&mut self) -> Vec<TrashEntry> { self.0.borrow_mut().list_trash() }
     pub fn restore(&mut self, id: &str) -> Result<bool> { self.0.borrow_mut().restore(id) }
     pub fn purge(&mut self, id: &str) -> Result<()> { self.0.borrow_mut().purge(id) }
+    pub fn purge_all(&mut self) -> Result<()> { self.0.borrow_mut().purge_all() }
     pub fn import(&mut self, path: &std::path::Path) -> Result<String> { self.0.borrow_mut().import(path) }
     pub fn set_width(&mut self, id: &str, width: PageWidth) -> Result<()> { self.0.borrow_mut().set_width(id, width) }
     pub fn update_meta(&mut self, id: &str, f: impl FnOnce(&mut Meta)) -> Result<()> { self.0.borrow_mut().update_meta(id, f) }

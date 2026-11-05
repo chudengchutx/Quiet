@@ -9,3 +9,4 @@
 
 /dist-release.*
 .wrangler/
+feishu-auth.json

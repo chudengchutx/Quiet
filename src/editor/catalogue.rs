@@ -193,7 +193,8 @@ impl Editor {
             self.cat_entries = Rc::new(entries(&self.core.doc));
         }
         let o = f32::from(self.pane_size().width);
-        self.layout = page_layout(o, self.column_max(), true, self.cat_pinned);
+        let has_cat = !self.cat_entries.is_empty();
+        self.layout = page_layout(o, self.column_max(), has_cat, self.cat_pinned);
     }
 
     /// Scroll-spy: the last heading at most 90px below the viewport top. A

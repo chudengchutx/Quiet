@@ -239,24 +239,31 @@ fn convert_image_to_png_format(bytes: &[u8], image_format: ImageFormat) -> Resul
     Ok(output_buf)
 }
 
-// Here, we enumerate all formats on the clipboard and find the first one that we can process.
-// The reason we don't use `GetPriorityClipboardFormat` is that it sometimes returns the
-// wrong format.
-// For instance, when copying a JPEG image from  Microsoft Word, there may be several formats
-// on the clipboard: Jpeg, Png, Svg.
-// If we use `GetPriorityClipboardFormat`, it will return Svg, which is not what we want.
+// Enumerate clipboard formats, then prefer Image over Files over Text.
+// Windows often lists CF_UNICODETEXT before PNG even for Win+Shift+S, and the
+// old "first supported format" walk pasted a path string instead of the image.
+// Still avoid GetPriorityClipboardFormat: Word may rank Svg above Jpeg/Png.
 fn with_best_match_format<F>(f: F) -> Option<ClipboardItem>
 where
     F: Fn(u32) -> Option<ClipboardEntry>,
 {
     let count = unsafe { CountClipboardFormats() };
     let mut clipboard_format = 0;
+    let mut formats = Vec::new();
     for _ in 0..count {
         clipboard_format = unsafe { EnumClipboardFormats(clipboard_format) };
-        let Some(item_format) = FORMATS_SET.get(&clipboard_format) else {
-            continue;
-        };
-        if let Some(entry) = f(*item_format) {
+        if FORMATS_SET.contains(&clipboard_format) {
+            formats.push(clipboard_format);
+        }
+    }
+    let rank = |fmt: u32| match format_to_type(fmt) {
+        ClipboardFormatType::Image => 0u8,
+        ClipboardFormatType::Files => 1,
+        ClipboardFormatType::Text => 2,
+    };
+    formats.sort_by_key(|fmt| rank(*fmt));
+    for item_format in formats {
+        if let Some(entry) = f(item_format) {
             return Some(ClipboardItem {
                 entries: vec![entry],
             });

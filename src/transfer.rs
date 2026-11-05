@@ -19,6 +19,13 @@ pub struct ExportMd {
     pub all: bool,
 }
 
+/// 从飞书链接导入 dialog state.
+pub struct ImportLink {
+    pub url: String,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
 const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
 
 fn downloads() -> PathBuf {
@@ -389,6 +396,124 @@ impl Workspace {
             cx,
         ))
     }
+
+
+    /// 从飞书链接导入…
+    pub fn open_import_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus();
+        let clip = cx.read_from_clipboard()
+            .and_then(|item| {
+                item.entries().iter().find_map(|e| match e {
+                    gpui::ClipboardEntry::String(s) => Some(s.text().clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        let url = if fdl_core::feishu::parse_doc_url(&clip).is_ok() { clip } else { String::new() };
+        self.import_link = Some(crate::transfer::ImportLink { url, busy: false, error: None });
+        if let Some(f) = self.import_link_field.as_ref() {
+            f.update(cx, |f, cx| {
+                f.set_text(self.import_link.as_ref().map(|i| i.url.as_str()).unwrap_or(""), cx);
+            });
+        }
+        cx.notify();
+        let _ = window;
+    }
+
+    pub fn confirm_import_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.import_link.as_mut() else { return };
+        if state.busy { return; }
+        let url = if let Some(f) = self.import_link_field.as_ref() {
+            f.read(cx).text.clone()
+        } else {
+            state.url.clone()
+        };
+        state.url = url.clone();
+        if let Err(e) = fdl_core::feishu::parse_doc_url(&url) {
+            state.error = Some(e.to_string());
+            cx.notify();
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        cx.notify();
+        let root = fdl_core::store::Store::root_dir();
+        let assets = fdl_core::store::Store::assets_dir();
+        let auth = crate::feishu_import::load_auth(&root);
+        // Network via curl: run off the UI thread.
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                crate::feishu_import::import_from_url(&url, &auth, &assets)
+            }).await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                match result {
+                    Ok(doc) => {
+                        w.import_link = None;
+                        match w.store.create_from(&doc) {
+                            Ok(id) => {
+                                w.entries = w.store.list();
+                                w.sort();
+                                w.open(&id, window, cx);
+                                w.show_toast_kind(ToastKind::Info, crate::settings::text("已从飞书链接导入"), cx);
+                            }
+                            Err(_) => w.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请重试"), cx),
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(s) = w.import_link.as_mut() {
+                            s.busy = false;
+                            s.error = Some(format!("{e:#}"));
+                        }
+                        w.show_toast_kind(ToastKind::Error, crate::settings::text("飞书链接导入失败"), cx);
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    pub(crate) fn render_import_link(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.import_link.as_ref()?;
+        let busy = state.busy;
+        let err = state.error.clone();
+        let field = self.import_link_field.clone()?;
+        let dialog = dialog("import-feishu")
+            .relative()
+            .w(px(560.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .pt(px(24.)).pb(px(24.)).pl(px(24.)).pr(px(56.))
+                    .border_b_1().border_color(Theme::line_divider())
+                    .text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD)
+                    .child(crate::settings::text("从飞书链接导入")),
+            )
+            .child(close_button("import-feishu-close").absolute().top(px(27.)).right(px(25.)).on_click(cx.listener(|w, _, _, cx| {
+                w.import_link = None;
+                cx.notify();
+            })))
+            .child(
+                div().pt(px(20.)).px(px(24.)).pb(px(8.))
+                    .child(div().text_size(px(13.)).text_color(Theme::text_caption()).mb(px(8.)).child(crate::settings::text("粘贴飞书 /docx/ 文档链接")))
+                    .child(
+                        div().h(px(36.)).px(px(10.)).rounded(px(6.)).border_1().border_color(Theme::line_divider())
+                            .flex().items_center()
+                            .child(field.clone())
+                    )
+                    .when_some(err, |d, e| d.child(div().mt(px(8.)).text_size(px(12.)).text_color(Theme::text_caption()).child(e)))
+            )
+            .child(
+                div().px(px(24.)).pb(px(24.)).pt(px(16.)).flex().justify_end()
+                    .child(secondary_button("import-feishu-cancel", crate::settings::text("取消")).min_w(px(80.)).mr(px(12.)).on_click(cx.listener(|w, _, _, cx| {
+                        w.import_link = None; cx.notify();
+                    })))
+                    .child(primary_button("import-feishu-ok", if busy { crate::settings::text("导入中…") } else { crate::settings::text("导入") }).min_w(px(80.)).on_click(cx.listener(|w, _, window, cx| {
+                        w.confirm_import_link(window, cx);
+                    })))
+            );
+        Some(mask("import-feishu-mask", dialog, |w, cx| { w.import_link = None; cx.notify(); }, cx))
+    }
+
 }
 
 #[cfg(test)]

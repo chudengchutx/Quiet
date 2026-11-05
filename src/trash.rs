@@ -85,11 +85,36 @@ impl Workspace {
     }
 
     pub(crate) fn render_trash(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let header = page_header(self, "回收站", 26., cx).child(
-            crate::ui::header_icon("trash-search", "search")
-                .tip_label("搜索(⌘ + J)".into(), crate::ui::TipSide::Below)
-                .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
-        );
+        let header = page_header(self, "回收站", 26., cx)
+            .when(!self.trash.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("trash-empty-all")
+                        .h(px(crate::app::HEADER_ACTIONS_H))
+                        .px(px(10.))
+                        .mr(px(4.))
+                        .rounded(px(8.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .text_size(px(13.))
+                        .text_color(Theme::danger())
+                        .hover(|s| s.bg(Theme::fill_hover()))
+                        .active(|s| s.bg(Theme::fill_pressed()))
+                        .child(crate::settings::label("清空回收站"))
+                        .on_click(cx.listener(|w, _, _, cx| {
+                            w.confirm = Some(Confirm::PurgeAll);
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                crate::ui::header_icon("trash-search", "search")
+                    .tip_label("搜索(⌘ + J)".into(), crate::ui::TipSide::Below)
+                    .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
+            );
         let mut page = div().flex_1().min_w_0().h_full().flex().flex_col().child(header);
         if self.trash.is_empty() {
             return page.child(empty_state("illus/empty-trash.svg", crate::settings::text("回收站暂无内容"))).into_any_element();
@@ -253,6 +278,16 @@ impl Workspace {
         self.show_store_warnings(cx);
     }
 
+    fn purge_all_docs(&mut self, cx: &mut Context<Self>) {
+        match self.store.purge_all() {
+            Ok(()) => self.show_toast(crate::settings::text("已清空回收站"), cx),
+            Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(&e.to_string()))),
+        }
+        self.trash_menu = None;
+        self.trash = self.store.list_trash();
+        self.show_store_warnings(cx);
+    }
+
     fn show_store_warnings(&mut self, cx: &mut Context<Self>) {
         let warnings = self.store.take_warnings();
         if !warnings.is_empty() {
@@ -284,6 +319,7 @@ impl Workspace {
             ),
             Confirm::Restore(_) => (crate::settings::text("确认恢复？").to_string(), crate::settings::text("确认后将恢复至原位置").to_string(), crate::settings::text("恢复"), false),
             Confirm::Purge(_) => (crate::settings::text("确认彻底删除？").to_string(), crate::settings::text("彻底删除后，该页面及其子页面将无法恢复").to_string(), crate::settings::text("删除"), true),
+            Confirm::PurgeAll => (crate::settings::text("确认清空回收站？").to_string(), crate::settings::text("清空后，回收站中的所有页面将无法恢复").to_string(), crate::settings::text("清空回收站"), true),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
                 crate::settings::text("选择隐藏后，协作者将无法查看本文的引用列表。如需重新显示，可点击文档右上角的更多按钮“...”，打开“显示引用列表”开关。").to_string(),
@@ -357,6 +393,7 @@ impl Workspace {
                             }
                             Confirm::Restore(id) => w.restore_doc(&id, cx),
                             Confirm::Purge(id) => w.purge_doc(&id, cx),
+                            Confirm::PurgeAll => w.purge_all_docs(cx),
                             Confirm::Refs { show, no_ask } => {
                                 if no_ask {
                                     let mut s = w.store.settings();

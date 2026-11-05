@@ -99,6 +99,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
         "FocusSearch" => (0, "搜索文档", "Search documents"),
         "ToggleShortcuts" => (0, "查看快捷键", "Show shortcuts"),
         "ImportDoc" => (1, "导入文档", "Import documents"),
+        "ImportFeishuLink" => (1, "从飞书链接导入", "Import from Feishu link"),
         "Save" => (1, "保存文档", "Save document"),
         "EditMode" => (1, "编辑模式", "Edit mode"),
         "ReadMode" => (1, "阅读模式", "Reading mode"),

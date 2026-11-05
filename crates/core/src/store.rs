@@ -601,6 +601,21 @@ impl Store {
         self.save_trash()
     }
 
+    /// Empty the 回收站: permanently delete every trashed page.
+    pub fn purge_all(&mut self) -> Result<()> {
+        let _lock = self.begin_write();
+        let ids: Vec<String> = self.trash.keys().cloned().collect();
+        for k in ids {
+            match std::fs::remove_file(self.trash_path(&k)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            self.trash.remove(&k);
+        }
+        self.save_trash()
+    }
+
     /// Copy a DocxXML file into the library under a fresh id.
     pub fn import(&mut self, path: &std::path::Path) -> Result<String> {
         let xml = std::fs::read_to_string(path)?;

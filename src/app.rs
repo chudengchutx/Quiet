@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-actions!(workspace, [NewDoc, ImportDoc, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
+actions!(workspace, [NewDoc, ImportDoc, ImportFeishuLink, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
     HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
 
 /// The menu bar, in the interface language.
@@ -47,6 +47,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("新建文档", "New Document"), NewDoc),
                 MenuItem::action(tr("新建笔记窗口", "New Note Window"), crate::quick_note::QuickNew),
                 MenuItem::action(tr("导入为文档…", "Import as Document…"), ImportDoc),
+                MenuItem::action(tr("从飞书链接导入…", "Import from Feishu Link…"), ImportFeishuLink),
                 MenuItem::separator(),
                 MenuItem::action(tr("关闭窗口", "Close Window"), CloseWindow),
             ],
@@ -181,6 +182,8 @@ pub enum Confirm {
     Restore(String),
     /// 回收站 → 彻底删除.
     Purge(String),
+    /// 回收站 → 清空回收站.
+    PurgeAll,
     /// 隐藏引用列表 (with 不再提示) / 显示引用列表.
     Refs { show: bool, no_ask: bool },
     /// The open document could not be written before it was to be replaced
@@ -262,6 +265,8 @@ pub struct Workspace {
     pub move_dlg: Option<crate::tree::MoveDialog>,
     /// 导出 Markdown 设置.
     pub export_md: Option<crate::transfer::ExportMd>,
+    pub import_link: Option<crate::transfer::ImportLink>,
+    pub import_link_field: Option<Entity<crate::input::TextField>>,
     /// 编辑 / 阅读 dropdown, and the mode button's last-frame bounds.
     pub mode_menu: bool,
     pub mode_btn_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -423,6 +428,11 @@ impl Workspace {
             expanded: HashSet::new(),
             move_dlg: None,
             export_md: None,
+            import_link: None,
+            import_link_field: Some(cx.new(|cx| {
+                let mut f = TextField::new(crate::settings::tr("粘贴飞书文档链接", "Paste Feishu doc link"), cx);
+                f
+            })),
             focus: cx.focus_handle(),
             save_task: None,
             unsaved: false,
@@ -1257,6 +1267,7 @@ impl Render for Workspace {
         };
         let move_dlg = self.render_move_dialog(cx);
         let export_md = self.render_export_md(cx);
+        let import_link = self.render_import_link(cx);
         // Only the note stands out: a white plane flush with the window's top,
         // right and bottom edges. The sidebar sits sunken on the window
         // surface beside it; the change of value is the only line between
@@ -1289,6 +1300,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &GoHome, _, cx| w.show_view(View::Home, cx)))
             .on_action(cx.listener(|w, _: &NewDoc, window, cx| w.new_doc(window, cx)))
             .on_action(cx.listener(|w, _: &ImportDoc, window, cx| w.open_import(window, cx)))
+            .on_action(cx.listener(|w, _: &ImportFeishuLink, window, cx| w.open_import_link(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| {
                 w.sidebar_open = !w.sidebar_open;
                 cx.notify();
@@ -1329,10 +1341,11 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
                 if w.record_shortcut(ev, cx) { return; }
                 // Esc cancels a confirmation dialog.
-                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some()) {
+                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some() || w.import_link.is_some()) {
                     w.confirm = None;
                     w.after_save = None;
                     w.export_md = None;
+                    w.import_link = None;
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -1366,6 +1379,7 @@ impl Render for Workspace {
             .children(confirm)
             .children(move_dlg)
             .children(export_md)
+            .children(import_link)
             .children(search)
             .children(resize_overlay)
             .children(toast)
