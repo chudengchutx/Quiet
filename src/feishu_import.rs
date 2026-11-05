@@ -189,6 +189,47 @@ fn urlencoding_lite(s: &str) -> String {
     out
 }
 
+/// Ensure `access_token` is set (tenant-token fallback, same as import).
+pub fn prepare_auth(auth: &FeishuAuth, host: &str) -> Result<FeishuAuth> {
+    let mut auth = auth.clone();
+    if auth.access_token.is_empty() {
+        if auth.app_id.is_empty() || auth.app_secret.is_empty() {
+            bail!("尚未配置飞书应用或登录，请先在文档库的 feishu-auth.json 填写 app_id / app_secret");
+        }
+        let (token, expire) = fetch_tenant_token(&auth.app_id, &auth.app_secret, host)?;
+        auth.access_token = token;
+        auth.expires_at = expire;
+    }
+    Ok(auth)
+}
+
+/// Download one Drive media token into `assets_dir`. Returns the absolute path.
+pub fn download_media_token(
+    token: &str,
+    auth: &FeishuAuth,
+    host: &str,
+    assets_dir: &Path,
+) -> Result<PathBuf> {
+    let token = token.trim();
+    if token.is_empty() {
+        bail!("空的媒体 token");
+    }
+    if auth.access_token.is_empty() {
+        bail!("尚未登录飞书，请先在设置里完成授权");
+    }
+    std::fs::create_dir_all(assets_dir)?;
+    let base = api_base(host);
+    let url = format!("{base}/drive/v1/medias/{token}/download");
+    let bytes = curl_bytes(&url, &auth.access_token)?;
+    if bytes.is_empty() {
+        bail!("下载内容为空");
+    }
+    let name = safe_name(token);
+    let path = assets_dir.join(&name);
+    std::fs::write(&path, &bytes)?;
+    Ok(path)
+}
+
 /// Download media tokens referenced by image/file blocks into `assets_dir`.
 pub fn download_media(
     blocks: &[ApiBlock],
@@ -197,7 +238,6 @@ pub fn download_media(
     assets_dir: &Path,
 ) -> Result<HashMap<String, String>> {
     std::fs::create_dir_all(assets_dir)?;
-    let base = api_base(host);
     let mut map = HashMap::new();
     let mut tokens = Vec::new();
     for b in blocks {
@@ -211,16 +251,10 @@ pub fn download_media(
     tokens.sort();
     tokens.dedup();
     for token in tokens {
-        // Drive media download URL.
-        let url = format!("{base}/drive/v1/medias/{token}/download");
-        match curl_bytes(&url, &auth.access_token) {
-            Ok(bytes) if !bytes.is_empty() => {
-                let name = safe_name(&token);
-                let path = assets_dir.join(&name);
-                std::fs::write(&path, &bytes)?;
+        match download_media_token(&token, auth, host, assets_dir) {
+            Ok(path) => {
                 map.insert(token, path.to_string_lossy().to_string());
             }
-            Ok(_) => {}
             Err(e) => {
                 // Keep importing; media stays as token placeholder.
                 eprintln!("feishu media {token}: {e:#}");
@@ -228,6 +262,13 @@ pub fn download_media(
         }
     }
     Ok(map)
+}
+
+/// Strip a `feishu-token:…` image src to the Drive file token, if present.
+pub fn feishu_media_token(src: &str) -> Option<&str> {
+    src.strip_prefix("feishu-token:")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
 }
 
 fn safe_name(token: &str) -> String {
@@ -420,16 +461,10 @@ pub fn import_from_url(
     on_progress: Option<&ProgressFn>,
 ) -> Result<Document> {
     let doc_ref = parse_doc_url(url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let mut auth = auth.clone();
     if auth.access_token.is_empty() {
-        if auth.app_id.is_empty() || auth.app_secret.is_empty() {
-            bail!("尚未配置飞书应用或登录，请先在文档库的 feishu-auth.json 填写 app_id / app_secret");
-        }
         report(on_progress, "正在获取访问令牌…");
-        let (token, expire) = fetch_tenant_token(&auth.app_id, &auth.app_secret, &doc_ref.host)?;
-        auth.access_token = token;
-        auth.expires_at = expire;
     }
+    let auth = prepare_auth(auth, &doc_ref.host)?;
     let (meta, blocks) = fetch_document(url, &auth, on_progress)?;
     let media_n = {
         let mut tokens = Vec::new();
@@ -512,4 +547,18 @@ pub fn fetch_tenant_token(app_id: &str, app_secret: &str, host: &str) -> Result<
     if env.code != 0 { bail!("飞书 API: {} ({})", env.msg, env.code); }
     if env.tenant_access_token.is_empty() { bail!("空的 tenant_access_token"); }
     Ok((env.tenant_access_token, env.expire))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::feishu_media_token;
+
+    #[test]
+    fn parses_feishu_token_src() {
+        assert_eq!(feishu_media_token("feishu-token:abc123"), Some("abc123"));
+        assert_eq!(feishu_media_token("feishu-token:  tok  "), Some("tok"));
+        assert_eq!(feishu_media_token("feishu-token:"), None);
+        assert_eq!(feishu_media_token("https://example.com/a.png"), None);
+        assert_eq!(feishu_media_token("/abs/path.png"), None);
+    }
 }

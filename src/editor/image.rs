@@ -213,6 +213,13 @@ impl ImageUi {
             self.remote.borrow_mut().entry(src.to_string()).or_insert(Remote::Queued);
             return Src::Pending;
         }
+        // Feishu import placeholder: never auto-fetch; retry sets Pending.
+        if src.starts_with("feishu-token:") {
+            return match self.remote.borrow().get(src) {
+                Some(Remote::Pending) | Some(Remote::Queued) => Src::Pending,
+                _ => Src::Failed,
+            };
+        }
         match image_path(src) {
             Some(p) if self.dims.borrow().contains_key(&p) || p.exists() => Src::Local(p),
             Some(_) => Src::Missing,
@@ -305,8 +312,17 @@ fn loading_el() -> AnyElement {
 }
 
 /// The error box: its content depends on the box size. A quiet fill in a
-/// hairline, crisp corners, 13pt secondary text and a link-coloured 点击重试.
-fn error_el(w: f32, h: f32, missing: bool, blocked: bool, border: Hsla, retry: Option<Rc<dyn Fn(&mut App)>>) -> AnyElement {
+/// hairline, crisp corners, 13pt secondary text and a link-coloured retry.
+/// `feishu`: undownloaded `feishu-token:…` placeholder from import.
+fn error_el(
+    w: f32,
+    h: f32,
+    missing: bool,
+    blocked: bool,
+    feishu: bool,
+    border: Hsla,
+    retry: Option<Rc<dyn Fn(&mut App)>>,
+) -> AnyElement {
     let text = |s: &'static str| div().text_size(px(13.)).line_height(px(24.)).my(px(4.)).child(s);
     let link = |s: &'static str| {
         let r = retry.clone();
@@ -324,6 +340,34 @@ fn error_el(w: f32, h: f32, missing: bool, blocked: bool, border: Hsla, retry: O
     };
     let body = if missing {
         (w > 58. && h > 58.).then(|| text(crate::settings::text("文件不存在")).into_any_element())
+    } else if feishu && w > 162. && h > 120. {
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(text(crate::settings::text("图片未下载")))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(20.))
+                        .text_color(Theme::text_placeholder())
+                        .mb(px(4.))
+                        .child(crate::settings::text("导入时未能获取，可重新下载")),
+                )
+                .child(link(crate::settings::text("重新下载")))
+                .into_any_element(),
+        )
+    } else if feishu && w > 120. && h > 58. {
+        Some(
+            text("")
+                .flex()
+                .child(crate::settings::text("图片未下载，"))
+                .child(link(crate::settings::text("重新下载")))
+                .into_any_element(),
+        )
+    } else if feishu && w > 58. && h > 58. {
+        Some(text("").child(link(crate::settings::text("重新下载"))).into_any_element())
     } else if blocked && w > 220. && h > 58. {
         Some(text("").flex().child(crate::settings::tr("未自动下载网络图片，", "Web image not downloaded. ")).child(link(crate::settings::tr("点击加载", "Load"))).into_any_element())
     } else if w > 162. && h > 58. {
@@ -392,6 +436,7 @@ impl R<'_> {
         let retry: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
             let _ = weak.update(cx, |e, cx| e.retry_image(&src_s, cx));
         });
+        let feishu = src.starts_with("feishu-token:");
         let content = match source {
             Src::Local(p) => {
                 let (iw, ih, ix, iy) = if g.crop != FULL && !cropping {
@@ -414,15 +459,15 @@ impl R<'_> {
                             .rounded(px(radius))
                             .object_fit(ObjectFit::Fill)
                             .with_loading(loading_el)
-                            .with_fallback(move || error_el(bw, bh, false, false, ring, Some(r.clone())))
+                            .with_fallback(move || error_el(bw, bh, false, false, false, ring, Some(r.clone())))
                             .id(("img", id.0)),
                     )
                     .into_any_element()
             }
             Src::Pending => loading_el(),
-            Src::Missing => error_el(bw, bh, true, false, ring, None),
-            Src::Failed => error_el(bw, bh, false, false, ring, Some(retry)),
-            Src::Blocked => error_el(bw, bh, false, true, ring, Some(retry)),
+            Src::Missing => error_el(bw, bh, true, false, false, ring, None),
+            Src::Failed => error_el(bw, bh, false, false, feishu, ring, Some(retry)),
+            Src::Blocked => error_el(bw, bh, false, true, false, ring, Some(retry)),
         };
         // `.img:after`: drawn inside the image — a 2pt accent ring when
         // selected, the quiet hairline under the pointer.
@@ -697,6 +742,10 @@ impl Editor {
             return;
         }
         self.img.retried.insert(src.to_string(), Instant::now());
+        if let Some(token) = crate::feishu_import::feishu_media_token(src) {
+            self.retry_feishu_image(src, token, cx);
+            return;
+        }
         self.img.remote.borrow_mut().remove(src);
         let p = if src.starts_with("http://") || src.starts_with("https://") { Some(self.img.remote_path(src)) } else { image_path(src) };
         if let Some(p) = p {
@@ -706,6 +755,70 @@ impl Editor {
         self.img.generation += 1;
         cx.notify();
     }
+
+    /// Re-fetch a `feishu-token:…` image with credentials from `feishu-auth.json`.
+    fn retry_feishu_image(&mut self, src: &str, token: &str, cx: &mut Context<Self>) {
+        let src_key = src.to_string();
+        let token = token.to_string();
+        self.img.remote.borrow_mut().insert(src_key.clone(), Remote::Pending);
+        self.img.generation += 1;
+        cx.notify();
+
+        let root = Store::root_dir();
+        let assets = Store::assets_dir();
+        // Host is not stored on the placeholder; Feishu CN is the common case.
+        // Lark Suite docs need credentials that hit open.larksuite.com — soft-fail.
+        let host = "feishu.cn".to_string();
+        let task = cx.background_executor().spawn(async move {
+            let auth = crate::feishu_import::load_auth(&root);
+            crate::feishu_import::prepare_auth(&auth, &host).and_then(|auth| {
+                crate::feishu_import::download_media_token(&token, &auth, &host, &assets)
+            })
+            .map(|p| p.to_string_lossy().to_string())
+            .map_err(|e| format!("{e:#}"))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |e, cx| {
+                match result {
+                    Ok(path) => {
+                        e.img.remote.borrow_mut().remove(&src_key);
+                        e.core.checkpoint(EditKind::Other);
+                        let mut ids = Vec::new();
+                        e.core.doc.for_each_block(|b| {
+                            if matches!(&b.kind, BlockKind::Image { src, .. } if *src == src_key) {
+                                ids.push(b.id);
+                            }
+                        });
+                        for id in ids {
+                            if let Some(BlockKind::Image { src, .. }) = e.core.block_mut(id).map(|b| &mut b.kind) {
+                                *src = path.clone();
+                            }
+                        }
+                        e.img.generation += 1;
+                        if e.core.dirty {
+                            e.core.dirty = false;
+                            cx.emit(EditorEvent::Changed);
+                        }
+                        cx.notify();
+                    }
+                    Err(msg) => {
+                        e.img.remote.borrow_mut().insert(src_key, Remote::Failed);
+                        e.img.generation += 1;
+                        let toast = if msg.contains("尚未配置") || msg.contains("尚未登录") || msg.contains("feishu-auth") {
+                            crate::settings::text("尚未配置飞书凭证，无法重新下载")
+                        } else {
+                            crate::settings::text("图片重新下载失败")
+                        };
+                        e.toast(toast, cx);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
 
     // ---- resize
 
