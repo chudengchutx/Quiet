@@ -267,6 +267,11 @@ pub struct Workspace {
     pub export_md: Option<crate::transfer::ExportMd>,
     pub import_link: Option<crate::transfer::ImportLink>,
     pub import_link_field: Option<Entity<crate::input::TextField>>,
+    /// 坚果云账号 dialog (opened when upload lacks credentials).
+    pub nutstore_auth: Option<crate::transfer::NutstoreAuthDlg>,
+    pub nutstore_email_field: Option<Entity<crate::input::TextField>>,
+    pub nutstore_password_field: Option<Entity<crate::input::TextField>>,
+    pub nutstore_root_field: Option<Entity<crate::input::TextField>>,
     /// 编辑 / 阅读 dropdown, and the mode button's last-frame bounds.
     pub mode_menu: bool,
     pub mode_btn_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -431,6 +436,18 @@ impl Workspace {
             import_link: None,
             import_link_field: Some(cx.new(|cx| {
                 let f = TextField::new(crate::settings::tr("粘贴飞书文档链接", "Paste Feishu doc link"), cx);
+                f
+            })),
+            nutstore_auth: None,
+            nutstore_email_field: Some(cx.new(|cx| {
+                TextField::new(crate::settings::tr("坚果云邮箱", "Nutstore email"), cx)
+            })),
+            nutstore_password_field: Some(cx.new(|cx| {
+                TextField::new(crate::settings::tr("应用密码", "App password"), cx)
+            })),
+            nutstore_root_field: Some(cx.new(|cx| {
+                let mut f = TextField::new(crate::settings::tr("云端文件夹", "Remote folder"), cx);
+                f.set_text("Quiet.md", cx);
                 f
             })),
             focus: cx.focus_handle(),
@@ -1292,6 +1309,7 @@ impl Render for Workspace {
         let move_dlg = self.render_move_dialog(cx);
         let export_md = self.render_export_md(cx);
         let import_link = self.render_import_link(cx);
+        let nutstore_auth = self.render_nutstore_auth(cx);
         // Only the note stands out: a white plane flush with the window's top,
         // right and bottom edges. The sidebar sits sunken on the window
         // surface beside it; the change of value is the only line between
@@ -1365,11 +1383,12 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
                 if w.record_shortcut(ev, cx) { return; }
                 // Esc cancels a confirmation dialog.
-                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some() || w.import_link.is_some()) {
+                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some() || w.import_link.is_some() || w.nutstore_auth.is_some()) {
                     w.confirm = None;
                     w.after_save = None;
                     w.export_md = None;
                     w.import_link = None;
+                    w.nutstore_auth = None;
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -1404,6 +1423,7 @@ impl Render for Workspace {
             .children(move_dlg)
             .children(export_md)
             .children(import_link)
+            .children(nutstore_auth)
             .children(search)
             .children(resize_overlay)
             .children(toast)

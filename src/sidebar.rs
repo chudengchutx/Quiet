@@ -231,6 +231,10 @@ impl Workspace {
                     div().h(px(46.)).mx(px(SB_X + 6. + 10. - 18.)).flex().items_center().gap(px(4.))
                         .child(footer_btn("bt-copy", "copy", crate::settings::text("创建副本"), some, false).on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx))))
                         .child(footer_btn("bt-move", "folder-input", crate::settings::text("移动到"), some, false).on_click(cx.listener(|w, _, window, cx| w.batch_move(window, cx))))
+                        .child(footer_btn("bt-nutstore", "folder", crate::settings::text("上传到坚果云"), some, false).on_click(cx.listener(|w, _, window, cx| {
+                            let ids = w.batch.clone().unwrap_or_default();
+                            w.upload_to_nutstore(ids, window, cx);
+                        })))
                         .child(footer_btn("bt-delete", "bin", crate::settings::text("删除"), some, false).on_click(cx.listener(|w, _, _, cx| w.ask_batch_delete(cx)))),
                 )
             });
@@ -712,6 +716,11 @@ impl Workspace {
                 .child(div().h(px(ROW_ITEM)).px(px(8.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_placeholder()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
                 .child(item("bm-copy", "copy", crate::settings::text("创建副本")).on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx))))
                 .child(item("bm-move", "folder-input", crate::settings::text("移动到")).on_click(cx.listener(|w, _, window, cx| w.batch_move(window, cx))))
+                .child(item("bm-nutstore", "folder", crate::settings::text("上传到坚果云")).on_click(cx.listener(|w, _, window, cx| {
+                    let ids = w.batch.clone().unwrap_or_default();
+                    w.row_menu = None;
+                    w.upload_to_nutstore(ids, window, cx);
+                })))
                 .child(item("bm-delete", "bin", crate::settings::text("删除")).on_click(cx.listener(|w, _, _, cx| w.ask_batch_delete(cx))));
             return vec![
                 deferred(anchored().anchor(m.corner).position(m.pos).snap_to_window_with_margin(px(8.)).child(menu))

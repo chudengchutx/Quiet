@@ -29,6 +29,12 @@ pub struct ImportLink {
     pub status: String,
 }
 
+/// 坚果云账号设置 dialog: fill in, then upload `pending_ids`.
+pub struct NutstoreAuthDlg {
+    pub pending_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
 const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
 
 fn downloads() -> PathBuf {
@@ -595,6 +601,310 @@ impl Workspace {
                     })))
             );
         Some(mask("import-feishu-mask", dialog, |w, cx| { w.import_link = None; cx.notify(); }, cx))
+    }
+
+    /// 上传到坚果云: single or batch. Opens auth dialog when credentials are missing.
+    pub fn upload_to_nutstore(&mut self, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus();
+        self.row_menu = None;
+        if ids.is_empty() {
+            return;
+        }
+        // Persist the open doc so the zip matches what the user sees.
+        if let Some(cur) = self.current.clone() {
+            if ids.iter().any(|id| id == &cur) {
+                self.flush(cx);
+            }
+        }
+        let root = fdl_core::store::Store::root_dir();
+        let auth = crate::nutstore::load_auth(&root);
+        if !auth.is_ready() {
+            self.open_nutstore_auth(ids, cx);
+            return;
+        }
+        self.start_nutstore_upload(ids, auth, window, cx);
+    }
+
+    pub fn open_nutstore_auth(&mut self, pending_ids: Vec<String>, cx: &mut Context<Self>) {
+        let root = fdl_core::store::Store::root_dir();
+        let auth = crate::nutstore::load_auth(&root);
+        if let Some(f) = self.nutstore_email_field.as_ref() {
+            f.update(cx, |f, cx| f.set_text(&auth.email, cx));
+        }
+        if let Some(f) = self.nutstore_password_field.as_ref() {
+            f.update(cx, |f, cx| f.set_text(&auth.app_password, cx));
+        }
+        if let Some(f) = self.nutstore_root_field.as_ref() {
+            let root_s = if auth.remote_root.trim().is_empty() {
+                "Quiet.md".to_string()
+            } else {
+                auth.remote_root.clone()
+            };
+            f.update(cx, |f, cx| f.set_text(&root_s, cx));
+        }
+        self.nutstore_auth = Some(NutstoreAuthDlg {
+            pending_ids,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    pub fn confirm_nutstore_auth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.nutstore_auth.as_mut() else { return };
+        let email = self
+            .nutstore_email_field
+            .as_ref()
+            .map(|f| f.read(cx).text.clone())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let app_password = self
+            .nutstore_password_field
+            .as_ref()
+            .map(|f| f.read(cx).text.clone())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let remote_root = self
+            .nutstore_root_field
+            .as_ref()
+            .map(|f| f.read(cx).text.clone())
+            .unwrap_or_else(|| "Quiet.md".into())
+            .trim()
+            .to_string();
+        if email.is_empty() || app_password.is_empty() {
+            state.error = Some(crate::settings::text("请填写坚果云邮箱和应用密码").to_string());
+            cx.notify();
+            return;
+        }
+        let auth = crate::nutstore::NutstoreAuth {
+            email,
+            app_password,
+            remote_root: if remote_root.is_empty() {
+                "Quiet.md".into()
+            } else {
+                remote_root
+            },
+        };
+        let root = fdl_core::store::Store::root_dir();
+        if let Err(e) = crate::nutstore::save_auth(&root, &auth) {
+            state.error = Some(format!("保存失败：{e}"));
+            cx.notify();
+            return;
+        }
+        let ids = state.pending_ids.clone();
+        self.nutstore_auth = None;
+        cx.notify();
+        self.start_nutstore_upload(ids, auth, window, cx);
+    }
+
+    fn start_nutstore_upload(
+        &mut self,
+        ids: Vec<String>,
+        auth: crate::nutstore::NutstoreAuth,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = ids.len();
+        self.show_toast_kind(
+            ToastKind::Info,
+            if n > 1 {
+                crate::settings::text("正在上传到坚果云…")
+            } else {
+                crate::settings::text("正在上传到坚果云…")
+            },
+            cx,
+        );
+        let root = fdl_core::store::Store::root_dir();
+        let titles: Vec<(String, String)> = ids
+            .iter()
+            .map(|id| {
+                let title = self
+                    .entries
+                    .iter()
+                    .find(|e| e.id == *id)
+                    .map(|e| display_title(&e.title))
+                    .unwrap_or_else(|| id.clone());
+                (id.clone(), title)
+            })
+            .collect();
+        enum Ev {
+            Progress(String),
+            Done(Result<usize, String>),
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Ev>();
+        let tx_p = tx.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let progress = move |msg: &str| {
+                    let _ = tx_p.send(Ev::Progress(msg.to_string()));
+                };
+                let result = crate::nutstore::upload_docs(&ids, &titles, &auth, &root, Some(&progress));
+                let _ = tx.send(Ev::Done(result.map_err(|e| format!("{e:#}"))));
+            })
+            .detach();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = loop {
+                let mut done = None;
+                while let Ok(ev) = rx.try_recv() {
+                    match ev {
+                        Ev::Progress(msg) => {
+                            let _ = this.update(cx, |w, cx| {
+                                w.show_toast_kind(ToastKind::Info, &msg, cx);
+                            });
+                        }
+                        Ev::Done(r) => done = Some(r),
+                    }
+                }
+                if let Some(r) = done {
+                    break r;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
+            let _ = this.update(cx, |w, cx| {
+                match result {
+                    Ok(n) => {
+                        w.batch = None;
+                        w.show_toast(
+                            &if n > 1 {
+                                crate::localized_format!("已上传 {} 篇到坚果云", "Uploaded {} documents to Nutstore", n)
+                            } else {
+                                crate::settings::text("已上传到坚果云").to_string()
+                            },
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        let msg = if e.contains("账号") || e.contains("应用密码") || e.contains("401") {
+                            crate::settings::text("坚果云账号或应用密码不正确，请检查后重试").to_string()
+                        } else {
+                            e
+                        };
+                        w.show_toast_kind(ToastKind::Error, &msg, cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn render_nutstore_auth(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.nutstore_auth.as_ref()?;
+        let err = state.error.clone();
+        let email = self.nutstore_email_field.clone()?;
+        let password = self.nutstore_password_field.clone()?;
+        let root_f = self.nutstore_root_field.clone()?;
+        let field_row = |label: &'static str, field: Entity<crate::input::TextField>| {
+            div()
+                .mb(px(12.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(Theme::text_caption())
+                        .mb(px(6.))
+                        .child(crate::settings::text(label)),
+                )
+                .child(
+                    div()
+                        .h(px(36.))
+                        .px(px(10.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(Theme::line_divider())
+                        .flex()
+                        .items_center()
+                        .child(field),
+                )
+        };
+        let dialog = dialog("nutstore-auth")
+            .relative()
+            .w(px(480.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .pt(px(24.))
+                    .pb(px(24.))
+                    .pl(px(24.))
+                    .pr(px(56.))
+                    .border_b_1()
+                    .border_color(Theme::line_divider())
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(crate::settings::text("坚果云账号")),
+            )
+            .child(
+                close_button("nutstore-auth-close")
+                    .absolute()
+                    .top(px(27.))
+                    .right(px(25.))
+                    .on_click(cx.listener(|w, _, _, cx| {
+                        w.nutstore_auth = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .pt(px(16.))
+                    .px(px(24.))
+                    .pb(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(Theme::text_caption())
+                            .mb(px(12.))
+                            .child(crate::settings::text(
+                                "请填写坚果云邮箱和应用密码（不是登录密码）。应用密码在坚果云网页：账户信息 → 安全选项 → 第三方应用管理。",
+                            )),
+                    )
+                    .child(field_row("邮箱", email))
+                    .child(field_row("应用密码", password))
+                    .child(field_row("云端文件夹", root_f))
+                    .when_some(err, |d, e| {
+                        d.child(
+                            div()
+                                .mt(px(4.))
+                                .text_size(px(12.))
+                                .text_color(Theme::text_caption())
+                                .child(e),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(24.))
+                    .pt(px(16.))
+                    .flex()
+                    .justify_end()
+                    .child(
+                        secondary_button("nutstore-auth-cancel", crate::settings::text("取消"))
+                            .min_w(px(80.))
+                            .mr(px(12.))
+                            .on_click(cx.listener(|w, _, _, cx| {
+                                w.nutstore_auth = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        primary_button("nutstore-auth-ok", crate::settings::text("保存并上传"))
+                            .min_w(px(80.))
+                            .on_click(cx.listener(|w, _, window, cx| {
+                                w.confirm_nutstore_auth(window, cx);
+                            })),
+                    ),
+            );
+        Some(mask(
+            "nutstore-auth-mask",
+            dialog,
+            |w, cx| {
+                w.nutstore_auth = None;
+                cx.notify();
+            },
+            cx,
+        ))
     }
 
 }

@@ -10,3 +10,4 @@
 /dist-release.*
 .wrangler/
 feishu-auth.json
+nutstore-auth.json

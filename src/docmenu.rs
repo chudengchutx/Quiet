@@ -199,6 +199,17 @@ impl Workspace {
                 menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
                     .on_hover(hover_sub(Some(DocSub::Download))),
             )
+            .child(
+                menu_item("dm-nutstore", "folder", crate::settings::text("上传到坚果云"), false, false)
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        w.close_doc_menu(cx);
+                        let id = w.current.clone();
+                        if let Some(id) = id {
+                            w.upload_to_nutstore(vec![id], window, cx);
+                        }
+                    })),
+            )
             .child(divider())
             .when(crate::printing::SUPPORTED, |d| d.child(
                 menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
@@ -266,7 +277,7 @@ impl Workspace {
                 },
             )),
             Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(9, 6) } else { item_top(8, 5) } - 1. - PAD,
+                if crate::printing::SUPPORTED { item_top(10, 6) } else { item_top(9, 5) } - 1. - PAD,
                 popover()
                     .id("dm-more-menu")
                     .occlude()
