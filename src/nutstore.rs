@@ -1,4 +1,4 @@
-//! 坚果云 WebDAV upload: auth beside the library, zip packages off the UI thread.
+//! 坚果云 WebDAV upload/import: auth beside the library, zip packages off the UI thread.
 //!
 //! Create an **应用密码** (not the login password) at
 //! https://www.jianguoyun.com/d/account#security → 安全选项 → 第三方应用管理.
@@ -342,6 +342,315 @@ pub fn upload_docs(
     result
 }
 
+
+/// A `.zip` package listed under the configured remote root.
+#[derive(Clone, Debug)]
+pub struct RemoteZip {
+    pub name: String,
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        if b[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Parse PROPFIND multistatus for `.zip` href basenames.
+pub fn zip_names_from_propfind(xml: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let low = xml.to_ascii_lowercase();
+    let mut search_from = 0;
+    while let Some(z) = low[search_from..].find(".zip") {
+        let end = search_from + z + 4;
+        let before = &xml[..end];
+        let start = before
+            .rfind(['/', '>', '"', '\'', ' ', '\t', '\n', '\r'])
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let raw = &xml[start..end];
+        let name = percent_decode(raw);
+        let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+        if base.to_ascii_lowercase().ends_with(".zip")
+            && !base.starts_with('.')
+            && !names.iter().any(|n| n == &base)
+        {
+            names.push(base);
+        }
+        search_from = end;
+    }
+    names.sort();
+    names
+}
+
+/// List `.zip` packages in `{remote_root}/` via WebDAV PROPFIND.
+pub fn list_remote_zips(auth: &NutstoreAuth) -> Result<Vec<RemoteZip>> {
+    if !auth.is_ready() {
+        bail!("尚未配置坚果云账号，请先填写邮箱和应用密码");
+    }
+    let remote_root = auth.remote_root_clean();
+    let url = dav_url(&format!("{remote_root}/"));
+    let body = concat!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+        "<d:propfind xmlns:d=\"DAV:\">",
+        "<d:prop><d:displayname/><d:getcontentlength/><d:resourcetype/></d:prop>",
+        "</d:propfind>",
+    );
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-f",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "20",
+            "-u",
+            &format!("{}:{}", auth.email.trim(), auth.app_password.trim()),
+            "-X",
+            "PROPFIND",
+            "-H",
+            "Depth: 1",
+            "-H",
+            "Content-Type: application/xml; charset=utf-8",
+            "-d",
+            body,
+            &url,
+        ])
+        .output()
+        .context("启动 curl 失败")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("401") {
+            bail!("坚果云账号或应用密码不正确，请检查后重试");
+        }
+        // Empty / missing folder: try MKCOL then empty list, or treat as empty.
+        if err.contains("404") {
+            return Ok(vec![]);
+        }
+        bail!("列出坚果云文件失败: {err}");
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(zip_names_from_propfind(&text)
+        .into_iter()
+        .map(|name| RemoteZip { name })
+        .collect())
+}
+
+fn get_file(auth: &NutstoreAuth, remote_path: &str, local: &Path) -> Result<()> {
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let url = dav_url(remote_path);
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-f",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "600",
+            "-u",
+            &format!("{}:{}", auth.email.trim(), auth.app_password.trim()),
+            "-o",
+            local.to_str().context("路径无效")?,
+            &url,
+        ])
+        .output()
+        .context("启动 curl 失败")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("401") {
+            bail!("坚果云账号或应用密码不正确，请检查后重试");
+        }
+        bail!("下载失败: {err}");
+    }
+    Ok(())
+}
+
+fn copy_dir_merge(src: &Path, dest: &Path) -> Result<usize> {
+    let mut n = 0usize;
+    if !src.is_dir() {
+        return Ok(0);
+    }
+    for entry in walkdir(src)? {
+        let rel = entry.strip_prefix(src).unwrap();
+        let to = dest.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            continue;
+        }
+        if let Some(p) = to.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        if !to.exists() {
+            std::fs::copy(&entry, &to)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Recursively list files/dirs under `root` (dirs then files via simple walk).
+fn walkdir(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.push(p.clone());
+                stack.push(p);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn find_named_dirs(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = walkdir(root) else { return found };
+    for p in entries {
+        if p.is_dir() && p.file_name().and_then(|s| s.to_str()) == Some(name) {
+            found.push(p);
+        }
+    }
+    found
+}
+
+/// Merge one extracted package into the library. Skips existing `docs/{id}.xml`.
+fn merge_extracted(extract_root: &Path, library: &Path) -> Result<(usize, usize)> {
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let docs_dest = library.join("docs");
+    let assets_dest = library.join("assets");
+    std::fs::create_dir_all(&docs_dest)?;
+    std::fs::create_dir_all(&assets_dest)?;
+
+    for docs_dir in find_named_dirs(extract_root, "docs") {
+        let Ok(rd) = std::fs::read_dir(&docs_dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("xml") {
+                continue;
+            }
+            let Some(id) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+            let dest = docs_dest.join(format!("{id}.xml"));
+            if dest.exists() {
+                skipped += 1;
+                continue;
+            }
+            std::fs::copy(&p, &dest)
+                .with_context(|| format!("写入文档失败: {id}"))?;
+            imported += 1;
+        }
+    }
+    for assets_dir in find_named_dirs(extract_root, "assets") {
+        let _ = copy_dir_merge(&assets_dir, &assets_dest)?;
+    }
+    Ok((imported, skipped))
+}
+
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
+pub struct ImportReport {
+    pub imported: usize,
+    pub skipped: usize,
+    pub zips: usize,
+}
+
+/// Download selected remote zips and merge into the local library.
+pub fn import_remote_zips(
+    names: &[String],
+    auth: &NutstoreAuth,
+    library: &Path,
+    on_progress: Option<&ProgressFn>,
+) -> Result<ImportReport> {
+    if !auth.is_ready() {
+        bail!("尚未配置坚果云账号，请先填写邮箱和应用密码");
+    }
+    if names.is_empty() {
+        bail!("请先选择要导入的文档包");
+    }
+    let remote_root = auth.remote_root_clean();
+    let work = std::env::temp_dir().join(format!(
+        "quiet-md-nutstore-import-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&work)?;
+    let mut stats = ImportReport {
+        zips: names.len(),
+        ..Default::default()
+    };
+    let result = (|| -> Result<ImportReport> {
+        for (i, name) in names.iter().enumerate() {
+            // Reject path tricks from a tampered listing.
+            if name.contains("..") || name.contains('/') || name.contains('\\') {
+                bail!("无效的文件名: {name}");
+            }
+            report(
+                on_progress,
+                &format!("正在下载 {}/{}：{name}", i + 1, names.len()),
+            );
+            let zip_path = work.join(name);
+            let remote = format!("{remote_root}/{name}");
+            get_file(auth, &remote, &zip_path)?;
+            let extract_to = work.join(format!("ex-{i}"));
+            std::fs::create_dir_all(&extract_to)?;
+            report(on_progress, &format!("正在导入 {}/{}…", i + 1, names.len()));
+            let status = Command::new("unzip")
+                .args(["-q", "-o"])
+                .arg(&zip_path)
+                .arg("-d")
+                .arg(&extract_to)
+                .status()
+                .context("启动 unzip 失败")?;
+            if !status.success() {
+                bail!("解压失败: {name}");
+            }
+            let (imp, skip) = merge_extracted(&extract_to, library)?;
+            stats.imported += imp;
+            stats.skipped += skip;
+            let _ = std::fs::remove_file(&zip_path);
+            let _ = std::fs::remove_dir_all(&extract_to);
+        }
+        Ok(stats)
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +670,17 @@ mod tests {
         a.app_password = "x".into();
         assert!(a.is_ready());
         assert_eq!(a.remote_root_clean(), "Quiet.md");
+    }
+
+    #[test]
+    fn parses_propfind_zip_names() {
+        let xml = r#"<?xml version="1.0"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response><D:href>/dav/Quiet.md/</D:href></D:response>
+  <D:response><D:href>/dav/Quiet.md/%E5%91%A8%E6%8A%A5_abc12345.zip</D:href></D:response>
+  <D:response><D:href>/dav/Quiet.md/note_deadbeef.zip</D:href></D:response>
+</D:multistatus>"#;
+        let names = zip_names_from_propfind(xml);
+        assert_eq!(names, vec!["note_deadbeef.zip".to_string(), "周报_abc12345.zip".to_string()]);
     }
 }

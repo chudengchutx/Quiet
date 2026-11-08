@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-actions!(workspace, [NewDoc, ImportDoc, ImportFeishuLink, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
+actions!(workspace, [NewDoc, ImportDoc, ImportFeishuLink, ImportNutstore, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
     HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
 
 /// The menu bar, in the interface language.
@@ -48,6 +48,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("新建笔记窗口", "New Note Window"), crate::quick_note::QuickNew),
                 MenuItem::action(tr("导入为文档…", "Import as Document…"), ImportDoc),
                 MenuItem::action(tr("从飞书链接导入…", "Import from Feishu Link…"), ImportFeishuLink),
+                MenuItem::action(tr("从坚果云导入…", "Import from Nutstore…"), ImportNutstore),
                 MenuItem::separator(),
                 MenuItem::action(tr("关闭窗口", "Close Window"), CloseWindow),
             ],
@@ -272,6 +273,7 @@ pub struct Workspace {
     pub nutstore_email_field: Option<Entity<crate::input::TextField>>,
     pub nutstore_password_field: Option<Entity<crate::input::TextField>>,
     pub nutstore_root_field: Option<Entity<crate::input::TextField>>,
+    pub nutstore_import: Option<crate::transfer::NutstoreImportDlg>,
     /// 编辑 / 阅读 dropdown, and the mode button's last-frame bounds.
     pub mode_menu: bool,
     pub mode_btn_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -450,6 +452,7 @@ impl Workspace {
                 f.set_text("Quiet.md", cx);
                 f
             })),
+            nutstore_import: None,
             focus: cx.focus_handle(),
             save_task: None,
             unsaved: false,
@@ -1310,6 +1313,7 @@ impl Render for Workspace {
         let export_md = self.render_export_md(cx);
         let import_link = self.render_import_link(cx);
         let nutstore_auth = self.render_nutstore_auth(cx);
+        let nutstore_import = self.render_nutstore_import(cx);
         // Only the note stands out: a white plane flush with the window's top,
         // right and bottom edges. The sidebar sits sunken on the window
         // surface beside it; the change of value is the only line between
@@ -1343,6 +1347,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &NewDoc, window, cx| w.new_doc(window, cx)))
             .on_action(cx.listener(|w, _: &ImportDoc, window, cx| w.open_import(window, cx)))
             .on_action(cx.listener(|w, _: &ImportFeishuLink, window, cx| w.open_import_link(window, cx)))
+            .on_action(cx.listener(|w, _: &ImportNutstore, window, cx| w.open_import_nutstore(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| {
                 w.sidebar_open = !w.sidebar_open;
                 cx.notify();
@@ -1383,12 +1388,13 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
                 if w.record_shortcut(ev, cx) { return; }
                 // Esc cancels a confirmation dialog.
-                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some() || w.import_link.is_some() || w.nutstore_auth.is_some()) {
+                if ev.keystroke.key == "escape" && (w.confirm.is_some() || w.export_md.is_some() || w.import_link.is_some() || w.nutstore_auth.is_some() || w.nutstore_import.is_some()) {
                     w.confirm = None;
                     w.after_save = None;
                     w.export_md = None;
                     w.import_link = None;
                     w.nutstore_auth = None;
+                    w.nutstore_import = None;
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -1424,6 +1430,7 @@ impl Render for Workspace {
             .children(export_md)
             .children(import_link)
             .children(nutstore_auth)
+            .children(nutstore_import)
             .children(search)
             .children(resize_overlay)
             .children(toast)

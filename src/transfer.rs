@@ -29,10 +29,27 @@ pub struct ImportLink {
     pub status: String,
 }
 
-/// 坚果云账号设置 dialog: fill in, then upload `pending_ids`.
+/// What to do after the 坚果云账号 dialog saves credentials.
+#[derive(Clone, Debug)]
+pub enum NutstorePending {
+    Upload(Vec<String>),
+    Import,
+}
+
+/// 坚果云账号设置 dialog: fill in, then continue `pending`.
 pub struct NutstoreAuthDlg {
-    pub pending_ids: Vec<String>,
+    pub pending: NutstorePending,
     pub error: Option<String>,
+}
+
+/// Pick remote zip packages to import.
+pub struct NutstoreImportDlg {
+    /// `(file name, selected)`.
+    pub items: Vec<(String, bool)>,
+    pub busy: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub status: String,
 }
 
 const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
@@ -619,13 +636,13 @@ impl Workspace {
         let root = fdl_core::store::Store::root_dir();
         let auth = crate::nutstore::load_auth(&root);
         if !auth.is_ready() {
-            self.open_nutstore_auth(ids, cx);
+            self.open_nutstore_auth(NutstorePending::Upload(ids), cx);
             return;
         }
         self.start_nutstore_upload(ids, auth, window, cx);
     }
 
-    pub fn open_nutstore_auth(&mut self, pending_ids: Vec<String>, cx: &mut Context<Self>) {
+    pub fn open_nutstore_auth(&mut self, pending: NutstorePending, cx: &mut Context<Self>) {
         let root = fdl_core::store::Store::root_dir();
         let auth = crate::nutstore::load_auth(&root);
         if let Some(f) = self.nutstore_email_field.as_ref() {
@@ -643,7 +660,7 @@ impl Workspace {
             f.update(cx, |f, cx| f.set_text(&root_s, cx));
         }
         self.nutstore_auth = Some(NutstoreAuthDlg {
-            pending_ids,
+            pending,
             error: None,
         });
         cx.notify();
@@ -692,10 +709,13 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let ids = state.pending_ids.clone();
+        let pending = state.pending.clone();
         self.nutstore_auth = None;
         cx.notify();
-        self.start_nutstore_upload(ids, auth, window, cx);
+        match pending {
+            NutstorePending::Upload(ids) => self.start_nutstore_upload(ids, auth, window, cx),
+            NutstorePending::Import => self.start_nutstore_list(auth, window, cx),
+        }
     }
 
     fn start_nutstore_upload(
@@ -793,6 +813,10 @@ impl Workspace {
     pub(crate) fn render_nutstore_auth(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.nutstore_auth.as_ref()?;
         let err = state.error.clone();
+        let ok_label = match &state.pending {
+            NutstorePending::Upload(_) => crate::settings::text("保存并上传"),
+            NutstorePending::Import => crate::settings::text("保存并继续"),
+        };
         let email = self.nutstore_email_field.clone()?;
         let password = self.nutstore_password_field.clone()?;
         let root_f = self.nutstore_root_field.clone()?;
@@ -889,7 +913,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        primary_button("nutstore-auth-ok", crate::settings::text("保存并上传"))
+                        primary_button("nutstore-auth-ok", ok_label)
                             .min_w(px(80.))
                             .on_click(cx.listener(|w, _, window, cx| {
                                 w.confirm_nutstore_auth(window, cx);
@@ -901,6 +925,409 @@ impl Workspace {
             dialog,
             |w, cx| {
                 w.nutstore_auth = None;
+                cx.notify();
+            },
+            cx,
+        ))
+    }
+
+    /// 从坚果云导入… (File menu). Lists remote zips after auth.
+    pub fn open_import_nutstore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus();
+        let root = fdl_core::store::Store::root_dir();
+        let auth = crate::nutstore::load_auth(&root);
+        if !auth.is_ready() {
+            self.open_nutstore_auth(NutstorePending::Import, cx);
+            return;
+        }
+        self.start_nutstore_list(auth, window, cx);
+    }
+
+    fn start_nutstore_list(
+        &mut self,
+        auth: crate::nutstore::NutstoreAuth,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nutstore_import = Some(NutstoreImportDlg {
+            items: vec![],
+            busy: false,
+            loading: true,
+            error: None,
+            status: crate::settings::text("正在列出坚果云文档包…").to_string(),
+        });
+        cx.notify();
+        self.show_toast_kind(ToastKind::Info, crate::settings::text("正在连接坚果云…"), cx);
+        enum Ev {
+            Done(Result<Vec<String>, String>),
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Ev>();
+        cx.background_executor()
+            .spawn(async move {
+                let result = crate::nutstore::list_remote_zips(&auth)
+                    .map(|v| v.into_iter().map(|z| z.name).collect::<Vec<_>>())
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Ev::Done(result));
+            })
+            .detach();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = loop {
+                if let Ok(Ev::Done(r)) = rx.try_recv() {
+                    break r;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
+            let _ = this.update(cx, |w, cx| {
+                match result {
+                    Ok(names) => {
+                        if let Some(dlg) = w.nutstore_import.as_mut() {
+                            dlg.loading = false;
+                            dlg.status.clear();
+                            dlg.error = None;
+                            // Pre-select all for convenience.
+                            dlg.items = names.into_iter().map(|n| (n, true)).collect();
+                            if dlg.items.is_empty() {
+                                dlg.error = Some(
+                                    crate::settings::text("云端文件夹里还没有上传的文档包").to_string(),
+                                );
+                            }
+                        }
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        let msg = if e.contains("账号") || e.contains("应用密码") || e.contains("401") {
+                            crate::settings::text("坚果云账号或应用密码不正确，请检查后重试").to_string()
+                        } else {
+                            e
+                        };
+                        if let Some(dlg) = w.nutstore_import.as_mut() {
+                            dlg.loading = false;
+                            dlg.error = Some(msg.clone());
+                        } else {
+                            w.show_toast_kind(ToastKind::Error, &msg, cx);
+                        }
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn confirm_nutstore_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.nutstore_import.as_mut() else { return };
+        if state.busy || state.loading {
+            return;
+        }
+        let names: Vec<String> = state
+            .items
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(n, _)| n.clone())
+            .collect();
+        if names.is_empty() {
+            state.error = Some(crate::settings::text("请先选择要导入的文档包").to_string());
+            cx.notify();
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.status = crate::settings::text("正在从坚果云导入…").to_string();
+        cx.notify();
+        self.show_toast_kind(ToastKind::Info, crate::settings::text("正在从坚果云导入…"), cx);
+        let root = fdl_core::store::Store::root_dir();
+        let auth = crate::nutstore::load_auth(&root);
+        enum Ev {
+            Progress(String),
+            Done(Result<crate::nutstore::ImportReport, String>),
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Ev>();
+        let tx_p = tx.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let progress = move |msg: &str| {
+                    let _ = tx_p.send(Ev::Progress(msg.to_string()));
+                };
+                let result = crate::nutstore::import_remote_zips(&names, &auth, &root, Some(&progress));
+                let _ = tx.send(Ev::Done(result.map_err(|e| format!("{e:#}"))));
+            })
+            .detach();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = loop {
+                let mut done = None;
+                while let Ok(ev) = rx.try_recv() {
+                    match ev {
+                        Ev::Progress(msg) => {
+                            let _ = this.update(cx, |w, cx| {
+                                if let Some(s) = w.nutstore_import.as_mut() {
+                                    s.status = msg.clone();
+                                }
+                                w.show_toast_kind(ToastKind::Info, &msg, cx);
+                                cx.notify();
+                            });
+                        }
+                        Ev::Done(r) => done = Some(r),
+                    }
+                }
+                if let Some(r) = done {
+                    break r;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            };
+            let _ = this.update(cx, |w, cx| {
+                match result {
+                    Ok(rep) => {
+                        w.nutstore_import = None;
+                        w.entries = w.store.list();
+                        w.sort();
+                        let msg = if rep.skipped > 0 {
+                            crate::localized_format!(
+                                "已导入 {} 篇，跳过 {} 篇已存在",
+                                "Imported {}, skipped {} existing",
+                                rep.imported,
+                                rep.skipped
+                            )
+                        } else if rep.imported == 0 {
+                            crate::settings::text("没有可导入的新文档").to_string()
+                        } else if rep.imported > 1 {
+                            crate::localized_format!(
+                                "已从坚果云导入 {} 篇",
+                                "Imported {} documents from Nutstore",
+                                rep.imported
+                            )
+                        } else {
+                            crate::settings::text("已从坚果云导入").to_string()
+                        };
+                        w.show_toast(&msg, cx);
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        let msg = if e.contains("账号") || e.contains("应用密码") || e.contains("401") {
+                            crate::settings::text("坚果云账号或应用密码不正确，请检查后重试").to_string()
+                        } else {
+                            e
+                        };
+                        if let Some(s) = w.nutstore_import.as_mut() {
+                            s.busy = false;
+                            s.status.clear();
+                            s.error = Some(msg.clone());
+                        }
+                        w.show_toast_kind(ToastKind::Error, &msg, cx);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn render_nutstore_import(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.nutstore_import.as_ref()?;
+        let busy = state.busy;
+        let loading = state.loading;
+        let err = state.error.clone();
+        let status = state.status.clone();
+        let items = state.items.clone();
+        let selected = items.iter().filter(|(_, on)| *on).count();
+        let all_on = !items.is_empty() && items.iter().all(|(_, on)| *on);
+        let list = div()
+            .id("nutstore-import-list")
+            .max_h(px(280.))
+            .overflow_y_scroll()
+            .border_1()
+            .border_color(Theme::line_divider())
+            .rounded(px(6.))
+            .when(items.is_empty() && !loading, |d| {
+                d.p(px(16.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(Theme::text_caption())
+                            .child(crate::settings::text("没有可导入的文档包")),
+                    )
+            })
+            .children(items.iter().enumerate().map(|(i, (name, on))| {
+                let name_s = name.clone();
+                let checked = *on;
+                div()
+                    .id(SharedString::from(format!("nz-{i}")))
+                    .h(px(36.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(Theme::fill_hover()))
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        if let Some(dlg) = w.nutstore_import.as_mut() {
+                            if let Some(item) = dlg.items.get_mut(i) {
+                                item.1 = !item.1;
+                            }
+                        }
+                        cx.notify();
+                    }))
+                    .child(crate::ui::checkbox(checked))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_size(px(13.))
+                            .text_ellipsis()
+                            .child(name_s),
+                    )
+            }));
+        let dialog = dialog("nutstore-import")
+            .relative()
+            .w(px(520.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .pt(px(24.))
+                    .pb(px(24.))
+                    .pl(px(24.))
+                    .pr(px(56.))
+                    .border_b_1()
+                    .border_color(Theme::line_divider())
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(crate::settings::text("从坚果云导入")),
+            )
+            .child(
+                close_button("nutstore-import-close")
+                    .absolute()
+                    .top(px(27.))
+                    .right(px(25.))
+                    .on_click(cx.listener(|w, _, _, cx| {
+                        if w.nutstore_import.as_ref().is_some_and(|s| s.busy) {
+                            return;
+                        }
+                        w.nutstore_import = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .pt(px(16.))
+                    .px(px(24.))
+                    .pb(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(Theme::text_caption())
+                            .mb(px(10.))
+                            .child(crate::settings::text("选择要导入的文档包（已存在的文档会跳过）")),
+                    )
+                    .when(!items.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .mb(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("nz-all")
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |w, _, _, cx| {
+                                            if let Some(dlg) = w.nutstore_import.as_mut() {
+                                                let to = !all_on;
+                                                for item in &mut dlg.items {
+                                                    item.1 = to;
+                                                }
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(crate::ui::checkbox(all_on))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(Theme::text_caption())
+                                                .child(crate::settings::text("全选")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(Theme::text_caption())
+                                        .child(crate::localized_format!("已选 {} 项", "Selected: {}", selected)),
+                                ),
+                        )
+                    })
+                    .child(list)
+                    .when(loading || (busy && !status.is_empty()), |d| {
+                        d.child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(12.))
+                                .text_color(Theme::text_caption())
+                                .child(if status.is_empty() {
+                                    crate::settings::text("请稍候…").to_string()
+                                } else {
+                                    status
+                                }),
+                        )
+                    })
+                    .when_some(err, |d, e| {
+                        d.child(
+                            div()
+                                .mt(px(8.))
+                                .text_size(px(12.))
+                                .text_color(Theme::text_caption())
+                                .child(e),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(24.))
+                    .pt(px(16.))
+                    .flex()
+                    .justify_end()
+                    .child(
+                        secondary_button("nutstore-import-cancel", crate::settings::text("取消"))
+                            .min_w(px(80.))
+                            .mr(px(12.))
+                            .on_click(cx.listener(|w, _, _, cx| {
+                                if w.nutstore_import.as_ref().is_some_and(|s| s.busy) {
+                                    return;
+                                }
+                                w.nutstore_import = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        primary_button(
+                            "nutstore-import-ok",
+                            if busy || loading {
+                                crate::settings::text("导入中…")
+                            } else {
+                                crate::settings::text("导入")
+                            },
+                        )
+                        .min_w(px(80.))
+                        .on_click(cx.listener(|w, _, window, cx| {
+                            w.confirm_nutstore_import(window, cx);
+                        })),
+                    ),
+            );
+        Some(mask(
+            "nutstore-import-mask",
+            dialog,
+            |w, cx| {
+                if w.nutstore_import.as_ref().is_some_and(|s| s.busy) {
+                    return;
+                }
+                w.nutstore_import = None;
                 cx.notify();
             },
             cx,
