@@ -4,6 +4,10 @@
 
 实现在 `crates/mcp`（包名 `quiet_md_mcp`，二进制 `quiet-md-mcp`），只依赖 `fdl_core`，不拉 GPUI。文档仍以 DocxXML 存在磁盘上；MCP 工具用 Markdown 导入/导出。
 
+## 应用内
+
+打开 **设置 → 文档库**，下方 **MCP** 分区可查看服务路径、文档库路径，并一键复制 Cursor / Claude Desktop 的 `mcpServers` 配置。发布包会把 `quiet-md-mcp` 放在与 `quiet_md` 同一目录（`.app/Contents/MacOS`）。
+
 ## 构建
 
 在仓库根目录：

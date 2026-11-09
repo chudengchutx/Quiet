@@ -27,6 +27,7 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/app-icon.icns"
 rm -rf "$icon_tmp"
 cp target/release/quiet_md "$bin.bin"
+cp target/release/quiet-md-mcp "$app/Contents/MacOS/quiet-md-mcp"
 # Finder launches must use the same library as this script.
 printf '#!/bin/zsh\nexport QUIET_MD_HOME=%q\nexec "${0:A:h}/quiet_md.bin" "$@"\n' "$preview_library" > "$bin"
 chmod +x "$bin"

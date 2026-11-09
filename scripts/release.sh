@@ -12,6 +12,7 @@ out=$(mktemp -d "$PWD/dist-release.XXXXXX")
 app="$out/quiet.md.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/quiet_md "$app/Contents/MacOS/"
+cp target/release/quiet-md-mcp "$app/Contents/MacOS/"
 cp LICENSE THIRD_PARTY.md "$app/Contents/Resources/"
 icons="$out/AppIcon.iconset"
 mkdir -p "$icons"

@@ -36,6 +36,7 @@ echo "== 组装 $app"
 rm -rf "$out"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/quiet_md "$app/Contents/MacOS/quiet_md"
+cp target/release/quiet-md-mcp "$app/Contents/MacOS/quiet-md-mcp"
 # .icns：Finder 和 Dock 用图标文件，不是裸 PNG。
 iconset=$(mktemp -d)/icon.iconset
 mkdir -p "$iconset"

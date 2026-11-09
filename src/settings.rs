@@ -665,19 +665,52 @@ impl Workspace {
 
     fn library_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let root = crate::store::Store::root_dir();
-        let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
-            dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
+        let location = friendly_path(&root);
+        let reveal = reveal_label();
+        let mcp = resolve_mcp_binary();
+        let mcp_display = mcp.as_ref().map(|p| friendly_path(p)).unwrap_or_else(|| friendly_path(&preferred_mcp_binary()));
+        let mcp_desc = if mcp.is_some() {
+            Some(mcp_display.clone().into())
+        } else if english() {
+            Some(format!("Not found at {}. Build with: cargo build -p quiet_md_mcp --release", mcp_display).into())
+        } else {
+            Some(format!("未找到（预期 {}）。在仓库根目录执行：cargo build -p quiet_md_mcp --release", mcp_display).into())
         };
-        let reveal = if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") } else if cfg!(target_os = "windows") {
-            tr("在文件资源管理器中显示", "Show in File Explorer")
-        } else { tr("在文件管理器中显示", "Show in File Manager") };
-        div().w_full().flex().flex_col().gap(px(8.))
+        let command = mcp.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| preferred_mcp_binary().display().to_string());
+        let home = root.display().to_string();
+        let cursor_json = mcp_client_config(&command, &home);
+        let claude_json = cursor_json.clone();
+        let mcp_reveal = mcp.clone();
+        div().w_full().flex().flex_col().gap(px(28.))
             .child(group(None, vec![
                 row(tr("文档库文件夹", "Documents folder"), Some(location.into()),
                     button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir()))).into_any_element(),
                 row(tr("回收站", "Trash"), Some(if english() { format!("Deleted documents are kept for {} days.", crate::store::TRASH_DAYS) } else { format!("删除的文档保留 {} 天后自动清除。", crate::store::TRASH_DAYS) }.into()),
                     button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Trash, cx)))).into_any_element(),
             ]))
+            .child(div().w_full().flex().flex_col().gap(px(8.))
+                .child(caption(tr("MCP", "MCP")))
+                .child(div().px(px(4.)).text_size(px(12.)).line_height(px(17.)).text_color(Theme::text_caption())
+                    .child(tr("AI 工具通过 MCP 读写本机文档库，与应用共用同一库。复制下方配置到 Cursor 或 Claude Desktop。",
+                        "AI tools read and write this library over MCP (same folder as the app). Copy a config below into Cursor or Claude Desktop.")))
+                .child(group(None, vec![
+                    row(tr("MCP 服务", "MCP server"), mcp_desc,
+                        div().flex().items_center().gap(px(8.))
+                            .when(mcp.is_some(), |d| d.child(button("reveal-mcp", reveal).on_click(move |_, _, cx| {
+                                if let Some(p) = &mcp_reveal { cx.reveal_path(p); }
+                            })))
+                            .into_any_element()).into_any_element(),
+                    row(tr("Cursor", "Cursor"), desc(tr("复制 mcpServers JSON，粘贴到 Cursor → Settings → MCP。", "Copy mcpServers JSON into Cursor → Settings → MCP.")),
+                        button("copy-mcp-cursor", tr("复制 Cursor 配置", "Copy Cursor config")).on_click(cx.listener(move |w, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(cursor_json.clone()));
+                            w.show_toast(tr("已复制 Cursor 配置", "Cursor MCP config copied"), cx);
+                        }))).into_any_element(),
+                    row(tr("Claude Desktop", "Claude Desktop"), desc(tr("复制后粘贴到 claude_desktop_config.json 的 mcpServers。", "Paste into mcpServers in claude_desktop_config.json.")),
+                        button("copy-mcp-claude", tr("复制 Claude 配置", "Copy Claude config")).on_click(cx.listener(move |w, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(claude_json.clone()));
+                            w.show_toast(tr("已复制 Claude 配置", "Claude MCP config copied"), cx);
+                        }))).into_any_element(),
+                ])))
             .into_any_element()
     }
 
@@ -737,6 +770,54 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
         _ => Some(button("update-check", tr("检查更新", "Check Now")).on_click(|_, _, cx| crate::update::check(true, cx))),
     };
     row(title, detail, div().children(control))
+}
+
+
+/// Short path for settings rows (`~/…` when under the home folder).
+fn friendly_path(path: &std::path::Path) -> String {
+    if cfg!(target_os = "windows") { return path.display().to_string(); }
+    dirs::home_dir().and_then(|h| path.strip_prefix(&h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| path.display().to_string())
+}
+
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") }
+    else if cfg!(target_os = "windows") { tr("在文件资源管理器中显示", "Show in File Explorer") }
+    else { tr("在文件管理器中显示", "Show in File Manager") }
+}
+
+/// Prefer the MCP binary shipped next to `quiet_md` (`.app/Contents/MacOS` or `target/release`).
+fn preferred_mcp_binary() -> std::path::PathBuf {
+    std::env::current_exe().ok().and_then(|exe| {
+        let dir = exe.parent()?.to_path_buf();
+        Some(dir.join("quiet-md-mcp"))
+    }).unwrap_or_else(|| std::path::PathBuf::from("quiet-md-mcp"))
+}
+
+fn resolve_mcp_binary() -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("quiet-md-mcp"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("/usr/local/bin/quiet-md-mcp"));
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".local/bin/quiet-md-mcp"));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Ready-to-paste `mcpServers` fragment; pins `QUIET_MD_HOME` to the app's library.
+fn mcp_client_config(command: &str, home: &str) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mcpServers": {
+            "quiet-md": {
+                "command": command,
+                "args": [],
+                "env": { "QUIET_MD_HOME": home }
+            }
+        }
+    })).unwrap_or_else(|_| "{}".into())
 }
 
 /// The app icon resampled once to 176px, its size at 88pt on a 2x screen.
