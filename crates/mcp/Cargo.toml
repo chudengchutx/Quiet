@@ -1,0 +1,24 @@
+# Stdio MCP server over fdl_core: list / read / search / create / update
+# Quiet.md documents for Cursor, Claude Desktop, and other MCP clients.
+[package]
+name = "quiet_md_mcp"
+version = "0.1.4"
+edition = "2024"
+description = "MCP stdio server for the Quiet.md local document library"
+license = "MIT"
+authors = ["s1dashu"]
+
+[[bin]]
+name = "quiet-md-mcp"
+path = "src/main.rs"
+
+[dependencies]
+fdl_core = { path = "../core" }
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+rmcp = { version = "3.9.0", features = ["server", "transport-io"] }
+
+[lints]
+workspace = true

@@ -2,9 +2,10 @@
 
 quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档在内存里是一棵 block 树（`model.rs`），在磁盘上是一份 DocxXML 文件（`docxml.rs`）。编辑器把这棵树画成一个虚拟化列表。
 
-仓库是一个 Cargo workspace，分两个 crate：
+仓库是一个 Cargo workspace，分三个 crate：
 
 - **`crates/core`（`fdl_core`，约 1 万行）**：文档引擎。包括模型、DocxXML、编辑内核和撤销、磁盘上的文档库、Markdown / HTML 导入和 Markdown 导出。它不依赖 GPUI，可以单独编译和测试（`cargo test -p fdl_core`），fuzzer 也在这里。
+- **`crates/mcp`（`quiet_md_mcp` / 二进制 `quiet-md-mcp`）**：stdio MCP 服务，把文档库暴露给 Cursor、Claude Desktop 等 AI 工具（见 docs/MCP.md）。只依赖 `fdl_core`。
 - **根 crate（`quiet_md`）**：GPUI 应用，即窗口、视图、渲染、菜单和浮层。`main.rs` 把 `fdl_core` 的模块重新导出到 crate 根，`editor/mod.rs` 重新导出 `editor::core` 和 `editor::table_ops`，所以应用里仍然写 `crate::model`、`super::core`。
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
