@@ -20,6 +20,9 @@ uuid = { version = "1.28.0", features = ["v4"] }
 rustc-hash = "2.1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+pdf-extract = "0.12"
 
 [lints]
 workspace = true

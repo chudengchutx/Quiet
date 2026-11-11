@@ -4,18 +4,20 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 741 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 761 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
 | 包 | 版本 | 许可 |
 |---|---|---|
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
+| adobe-cmap-parser | 0.4.1 | MIT |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | ahash | 0.8.12 | MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | aligned | 0.4.3 | MIT OR Apache-2.0 |
 | aligned-vec | 0.6.4 | MIT |
+| android_system_properties | 0.1.6 | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | ar_archive_writer | 0.5.3 | Apache-2.0 WITH LLVM-exception |
 | arbitrary | 1.5.0 | MIT OR Apache-2.0 |
@@ -52,6 +54,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | av1-grain | 0.2.5 | BSD-2-Clause |
 | avif-serialize | 0.8.9 | BSD-3-Clause |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
+| base64 | 0.23.1 | MIT OR Apache-2.0 |
 | bindgen | 0.71.1 | BSD-3-Clause |
 | bit-set | 0.8.0 | Apache-2.0 OR MIT |
 | bit-vec | 0.8.0 | Apache-2.0 OR MIT |
@@ -84,10 +87,12 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | cbindgen | 0.28.0 | MPL-2.0 |
 | cc | 1.9.0 | MIT OR Apache-2.0 |
 | cexpr | 0.6.0 | Apache-2.0/MIT |
+| cff-parser | 0.2.0 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | cfg_aliases | 0.2.2 | MIT |
 | cgl | 0.3.2 | MIT / Apache-2.0 |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 |
+| chrono | 0.4.45 | MIT OR Apache-2.0 |
 | cipher | 0.4.4 | MIT OR Apache-2.0 |
 | clang-sys | 1.9.1 | Apache-2.0 |
 | cocoa | 0.25.0 | MIT OR Apache-2.0 |
@@ -154,6 +159,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | dwrote | 0.11.5 | MPL-2.0 |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 |
+| ecb | 0.1.2 | MIT |
 | either | 1.19.0 | MIT OR Apache-2.0 |
 | embed-resource | 3.0.12 | MIT |
 | encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
@@ -166,6 +172,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | erased-serde | 0.4.10 | MIT OR Apache-2.0 |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | etagere | 0.2.15 | MIT/Apache-2.0 |
+| euclid | 0.20.14 | MIT / Apache-2.0 |
 | euclid | 0.22.14 | MIT OR Apache-2.0 |
 | event-listener | 2.5.3 | Apache-2.0 OR MIT |
 | event-listener | 5.4.2 | Apache-2.0 OR MIT |
@@ -256,6 +263,8 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | hyper | 1.12.0 | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
+| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
+| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | icu_collections | 2.3.0 | Unicode-3.0 |
 | icu_locale_core | 2.3.0 | Unicode-3.0 |
 | icu_normalizer | 2.3.0 | Unicode-3.0 |
@@ -303,6 +312,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | loop9 | 0.1.5 | MIT |
+| lopdf | 0.42.0 | MIT |
 | lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib |
 | lyon | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_algorithms | 1.0.21 | MIT OR Apache-2.0 |
@@ -322,6 +332,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
+| minisign-verify | 0.3.0 | MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mint | 0.5.9 | MIT |
@@ -372,9 +383,11 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | paste | 1.0.15 | MIT OR Apache-2.0 |
 | pastey | 0.1.1 | MIT OR Apache-2.0 |
+| pastey | 0.2.3 | MIT OR Apache-2.0 |
 | pathfinder_geometry | 0.5.1 | MIT/Apache-2.0 |
 | pathfinder_simd | 0.5.6 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.12.2 | MIT OR Apache-2.0 |
+| pdf-extract | 0.12.1 | MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | phf | 0.11.3 | MIT |
 | phf | 0.14.0 | MIT |
@@ -396,7 +409,9 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | png | 0.18.1 | MIT OR Apache-2.0 |
 | polling | 3.11.0 | Apache-2.0 OR MIT |
 | pollster | 0.2.5 | Apache-2.0/MIT |
+| pom | 1.1.0 | MIT |
 | postage | 0.5.0 | MIT |
+| postscript | 0.14.1 | Apache-2.0/MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | precomputed-hash | 0.1.1 | MIT |
@@ -454,6 +469,8 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | resvg | 0.45.1 | Apache-2.0 OR MIT |
 | rgb | 0.8.53 | MIT |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
+| rmcp | 3.9.0 | Apache-2.0 |
+| rmcp-macros | 3.9.0 | Apache-2.0 |
 | roxmltree | 0.20.0 | MIT OR Apache-2.0 |
 | rust-embed | 8.13.0 | MIT |
 | rust-embed-impl | 8.13.0 | MIT |
@@ -524,6 +541,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | strict-num | 0.1.1 | MIT |
 | string_cache | 0.8.9 | MIT OR Apache-2.0 |
 | string_cache_codegen | 0.5.4 | MIT OR Apache-2.0 |
+| stringprep | 0.1.5 | MIT/Apache-2.0 |
 | strsim | 0.11.1 | MIT |
 | strum | 0.26.3 | MIT |
 | strum | 0.27.2 | MIT |
@@ -569,6 +587,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | tinystr | 0.8.4 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.53.3 | MIT |
+| tokio-macros | 2.7.2 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-socks | 0.5.3 | MIT |
 | tokio-util | 0.7.20 | MIT |
@@ -591,6 +610,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | ttf-parser | 0.20.0 | MIT OR Apache-2.0 |
 | ttf-parser | 0.21.1 | MIT OR Apache-2.0 |
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 |
+| type1-encoding-parser | 0.1.1 | MIT |
 | typeid | 1.0.3 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | uds_windows | 1.2.1 | MIT |
@@ -751,6 +771,7 @@ quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | zvariant | 5.15.1 | MIT |
 | zvariant_derive | 5.15.1 | MIT |
 | zvariant_utils | 4.2.0 | MIT |
+
 
 ## Windows 运行库
 

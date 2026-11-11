@@ -1,6 +1,6 @@
 //! 导入 / 导出: 下载为 → PDF / Markdown (with the 导出 Markdown 设置
-//! dialog), 打印, and 导入为文档 (主页's 上传, the app menu): local Markdown
-//! or DocxXML files picked straight away. The Word / PDF settings and
+//! dialog), 打印, and 导入为文档 (主页's 上传, the app menu): local Markdown,
+//! PDF, or DocxXML files picked straight away. The Word / PDF settings and
 //! 打印选项 only choose what happens to comments, so they are left out.
 
 use crate::app::Workspace;
@@ -71,11 +71,11 @@ fn save_path(name: &str, cx: &mut App) -> impl std::future::Future<Output = Opti
     }
 }
 
-/// Markdown and DocxXML files to import: the system open panel, or a
+/// Markdown, PDF and DocxXML files to import: the system open panel, or a
 /// scripted answer.
 fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
     let picked = crate::devtools::take_pick();
-    let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml"]).map(|e| SharedString::from(*e)).collect());
+    let extensions = Some(MARKDOWN_EXTS.iter().chain(["xml", "pdf"].iter()).map(|e| SharedString::from(*e)).collect());
     let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("导入").into()), extensions }));
     async move {
         match prompt {
@@ -183,6 +183,17 @@ pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
         blocks.push(Block::text(""));
     }
     Ok(Document { title: RichText::plain(stem), icon: None, cover: None, blocks })
+}
+
+/// A digital PDF as a page: text, headings, lists and embedded images, then
+/// the same asset-copy as Markdown import.
+pub fn pdf_document(path: &Path) -> Result<Document, fdl_core::pdf::PdfError> {
+    let mut doc = fdl_core::pdf::document_from_pdf(path)?;
+    crate::editor::image::localize_pasted_images(&mut doc.blocks);
+    if doc.blocks.is_empty() {
+        doc.blocks.push(Block::text(""));
+    }
+    Ok(doc)
 }
 
 impl Workspace {
@@ -299,7 +310,7 @@ impl Workspace {
         .detach();
     }
 
-    /// 上传 / 导入为文档: pick Markdown or DocxXML files, each becoming a
+    /// 上传 / 导入为文档: pick Markdown, PDF or DocxXML files, each becoming a
     /// document; the last one opens.
     pub fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_menus();
@@ -318,17 +329,22 @@ impl Workspace {
             return;
         }
         let mut last = None;
-        let mut failed = false;
+        let mut first_err: Option<String> = None;
         for p in paths {
             let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
             let made = match ext.as_str() {
                 e if MARKDOWN_EXTS.contains(&e) => markdown_document(p).map_err(anyhow::Error::from).and_then(|doc| self.store.create_from(&doc)),
+                "pdf" => pdf_document(p).map_err(anyhow::Error::from).and_then(|doc| self.store.create_from(&doc)),
                 "xml" => self.store.import(p),
                 _ => Err(anyhow::anyhow!("文件格式不支持")),
             };
             match made {
                 Ok(id) => last = Some(id),
-                Err(_) => failed = true,
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                }
             }
         }
         self.entries = self.store.list();
@@ -336,8 +352,9 @@ impl Workspace {
         if let Some(id) = last {
             self.open(&id, window, cx);
         }
-        if failed {
-            self.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请检查文件格式"), cx);
+        if let Some(err) = first_err {
+            let msg = if err.is_empty() { "导入失败，请检查文件格式".to_string() } else { err };
+            self.show_toast_kind(ToastKind::Error, crate::settings::text(&msg), cx);
         }
         cx.notify();
     }
